@@ -16,8 +16,8 @@ st.set_page_config(page_title="Yatırım Defteri Sağlama Uygulaması", layout="
 st.title("📊 Yatırım Defteri Sağlama ve Kontrol Sistemi")
 st.write("Lütfen 1. Dönem ve 2. Dönem defter görsellerini yükleyin.")
 
-# API Key Girişi
-api_key = st.sidebar.text_input("Google AI Studio API Key", type="password")
+# API Key'i Gizli Kasadan (Secrets) Otomatik Alır
+API_KEY = st.secrets.get("GEMINI_API_KEY", "")
 
 col1, col2 = st.columns(2)
 with col1:
@@ -27,7 +27,8 @@ with col2:
 
 def process_ledger_images(img1, img2, key):
     genai.configure(api_key=key)
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    # Güncel ve hızlı model
+    model = genai.GenerativeModel('gemini-2.5-flash')
     
     prompt = """
     Bu iki görsel bir okulun yatırım defterine aittir (1. ve 2. Dönem).
@@ -51,7 +52,6 @@ def process_ledger_images(img1, img2, key):
     
     response = model.generate_content([prompt, img1, img2])
     
-    # JSON Temizleme
     clean_text = response.text.replace("```json", "").replace("```", "").strip()
     return json.loads(clean_text)
 
@@ -61,7 +61,6 @@ def generate_pdf(data, is_success, errors):
     elements = []
     styles = getSampleStyleSheet()
 
-    # Başlık Alanı
     if is_success:
         title_style = ParagraphStyle('SuccessTitle', parent=styles['Heading1'], fontSize=28, textColor=colors.HexColor('#15803d'), alignment=1, spaceAfter=15)
         elements.append(Paragraph("SAĞLAMA BAŞARILI", title_style))
@@ -69,13 +68,11 @@ def generate_pdf(data, is_success, errors):
         title_style = ParagraphStyle('FailTitle', parent=styles['Heading1'], fontSize=28, textColor=colors.HexColor('#b91c1c'), alignment=1, spaceAfter=15)
         elements.append(Paragraph("SAĞLAMA BAŞARISIZ", title_style))
         
-        # Hata Detayları
         err_style = ParagraphStyle('ErrText', parent=styles['Normal'], fontSize=11, textColor=colors.HexColor('#991b1b'))
         for err in errors:
             elements.append(Paragraph(f"• {err}", err_style))
         elements.append(Spacer(1, 10))
 
-    # Tablo Oluşturma
     table_data = [["Sıra", "Öğrenci Adı Soyadı", "1. Dönem Toplamı", "2. Dönem Toplamı", "Hesaplanan Toplam", "Defterdeki Toplam", "Durum"]]
     
     for idx, st_info in enumerate(data['students'], 1):
@@ -107,23 +104,21 @@ def generate_pdf(data, is_success, errors):
     return buffer
 
 if st.button("Sağlamayı Yap ve Raporla") and file_d1 and file_d2:
-    if not api_key:
-        st.error("Lütfen sol menüden API Anahtarınızı girin.")
+    if not API_KEY:
+        st.error("Sistem API Anahtarı tanımlanmamış. Lütfen Streamlit Secrets alanını kontrol edin.")
     else:
         with st.spinner("Görseller analiz ediliyor ve çapraz sağlama yapılıyor..."):
             try:
                 img1 = Image.open(file_d1)
                 img2 = Image.open(file_d2)
                 
-                result = process_ledger_images(img1, img2, api_key)
+                result = process_ledger_images(img1, img2, API_KEY)
                 
-                # Teyit Uyarı Kontrolü
                 if result.get("uncertain_cells"):
                     st.warning("⚠️ Bazı rakamlar net okunamadı. Lütfen kontrol edip doğrulayın:")
                     for cell in result["uncertain_cells"]:
                         st.text_input(f"{cell['student']} - {cell['field']}", value="")
                 
-                # Sağlama Mantığı
                 errors = []
                 calc_grand_total = 0
                 for student in result['students']:
@@ -134,7 +129,6 @@ if st.button("Sağlamayı Yap ve Raporla") and file_d1 and file_d2:
                 
                 is_success = len(errors) == 0 and calc_grand_total == result['written_grand_total']
                 
-                # PDF Üretimi
                 pdf_bytes = generate_pdf(result, is_success, errors)
                 
                 if is_success:
@@ -151,4 +145,4 @@ if st.button("Sağlamayı Yap ve Raporla") and file_d1 and file_d2:
                     mime="application/pdf"
                 )
             except Exception as e:
-                st.error(f"Bir işlem hatası oluştu. Lütfen API anahtarınızı veya yüklenen görselleri kontrol edin: {e}")
+                st.error(f"İşlem sırasında bir hata oluştu: {e}")
