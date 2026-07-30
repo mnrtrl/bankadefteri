@@ -1,0 +1,154 @@
+import os
+import io
+import json
+import pandas as pd
+import streamlit as st
+from PIL import Image
+from google import genai
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
+
+# Sayfa Yapılandırması
+st.set_page_config(page_title="Yatırım Defteri Sağlama Uygulaması", layout="wide")
+
+st.title("📊 Yatırım Defteri Sağlama ve Kontrol Sistemi")
+st.write("Lütfen 1. Dönem ve 2. Dönem defter görsellerini yükleyin.")
+
+# API Key Girişi (Sadece 1 Kez Yapılır)
+api_key = st.sidebar.text_input("Google AI Studio API Key", type="password")
+
+col1, col2 = st.columns(2)
+with col1:
+    file_d1 = st.file_uploader("1. Dönem Defter Görseli", type=["jpg", "jpeg", "png"])
+with col2:
+    file_d2 = st.file_uploader("2. Dönem Defter Görseli", type=["jpg", "jpeg", "png"])
+
+def process_ledger_images(img1, img2, key):
+    client = genai.Client(api_key=key)
+    
+    prompt = """
+    Bu iki görsel bir okulun yatırım defterine aittir (1. ve 2. Dönem).
+    Lütfen her iki sayfadaki öğrenci isimlerini, tarihlerdeki yatırımları ve toplamları analiz et.
+    JSON formatında şu yapıda çıktı ver:
+    {
+      "students": [
+        {
+          "name": "Öğrenci Adı",
+          "term1_total": 1300,
+          "term2_total": 2100,
+          "written_total": 3400
+        }
+      ],
+      "term1_date_total": 57050,
+      "term2_date_total": 65400,
+      "written_grand_total": 122450,
+      "uncertain_cells": [] 
+    }
+    Eğer okunmayan veya şüpheli bir rakam varsa 'uncertain_cells' dizisine ekle: [{"student": "Ad", "field": "Açıklama"}]
+    """
+    
+    response = client.models.generate_content(
+        model='gemini-2.5-flash',
+        contents=[prompt, img1, img2]
+    )
+    
+    # JSON Temizleme
+    clean_text = response.text.replace("```json", "").replace("```", "").strip()
+    return json.loads(clean_text)
+
+def generate_pdf(data, is_success, errors):
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
+    elements = []
+    styles = getSampleStyleSheet()
+
+    # Başlık Alanı
+    if is_success:
+        title_style = ParagraphStyle('SuccessTitle', parent=styles['Heading1'], fontSize=28, textColor=colors.HexColor('#15803d'), alignment=1, spaceAfter=15)
+        elements.append(Paragraph("SAĞLAMA BAŞARILI", title_style))
+    else:
+        title_style = ParagraphStyle('FailTitle', parent=styles['Heading1'], fontSize=28, textColor=colors.HexColor('#b91c1c'), alignment=1, spaceAfter=15)
+        elements.append(Paragraph("SAĞLAMA BAŞARISIZ", title_style))
+        
+        # Hata Detayları
+        err_style = ParagraphStyle('ErrText', parent=styles['Normal'], fontSize=11, textColor=colors.HexColor('#991b1b'))
+        for err in errors:
+            elements.append(Paragraph(f"• {err}", err_style))
+        elements.append(Spacer(1, 10))
+
+    # Tablo Oluşturma
+    table_data = [["Sıra", "Öğrenci Adı Soyadı", "1. Dönem Toplamı", "2. Dönem Toplamı", "Hesaplanan Toplam", "Defterdeki Toplam", "Durum"]]
+    
+    for idx, st_info in enumerate(data['students'], 1):
+        calc_tot = st_info['term1_total'] + st_info['term2_total']
+        status = "OK" if calc_tot == st_info['written_total'] else "HATALI"
+        table_data.append([
+            str(idx),
+            st_info['name'],
+            f"{st_info['term1_total']:,} TL",
+            f"{st_info['term2_total']:,} TL",
+            f"{calc_tot:,} TL",
+            f"{st_info['written_total']:,} TL",
+            status
+        ])
+
+    pdf_table = Table(table_data, colWidths=[30, 200, 100, 100, 110, 110, 60])
+    pdf_table.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1e293b')),
+        ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+        ('BOTTOMPADDING', (0,0), (-1,0), 8),
+        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#cbd5e1')),
+    ]))
+    
+    elements.append(pdf_table)
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer
+
+if st.button("Sağlamayı Yap ve Raporla") and file_d1 and file_d2:
+    if not api_key:
+        st.error("Lütfen sol menüden API Anahtarınızı girin.")
+    else:
+        with st.spinner("Görseller analiz ediliyor ve çapraz sağlama yapılıyor..."):
+            img1 = Image.open(file_d1)
+            img2 = Image.open(file_d2)
+            
+            result = process_ledger_images(img1, img2, api_key)
+            
+            # Teyit Uyarı Kontrolü
+            if result.get("uncertain_cells"):
+                st.warning("⚠️ Bazı rakamlar net okunamadı. Lütfen kontrol edip doğrulayın:")
+                for cell in result["uncertain_cells"]:
+                    st.text_input(f"{cell['student']} - {cell['field']}", value="")
+            
+            # Sağlama Mantığı
+            errors = []
+            calc_grand_total = 0
+            for student in result['students']:
+                c_tot = student['term1_total'] + student['term2_total']
+                calc_grand_total += c_tot
+                if c_tot != student['written_total']:
+                    errors.append(f"{student['name']}: Dönem toplamları ({c_tot} TL), yazılan toplam ile ({student['written_total']} TL) uyuşmuyor.")
+            
+            is_success = len(errors) == 0 and calc_grand_total == result['written_grand_total']
+            
+            # PDF Üretimi
+            pdf_bytes = generate_pdf(result, is_success, errors)
+            
+            if is_success:
+                st.success("✅ SAĞLAMA BAŞARILI! Tüm yatay ve dikey toplamlar %100 eşleşiyor.")
+            else:
+                st.error("❌ SAĞLAMA BAŞARISIZ! Hatalar tespit edildi.")
+                for e in errors:
+                    st.write(f"- {e}")
+                    
+            st.download_button(
+                label="📄 Detaylı PDF Raporunu İndir",
+                data=pdf_bytes,
+                file_name="Yatirim_Defteri_Saglama_Raporu.pdf",
+                mime="application/pdf"
+            )
