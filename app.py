@@ -2,6 +2,7 @@ import os
 import io
 import json
 import base64
+import requests
 import pandas as pd
 import streamlit as st
 from PIL import Image
@@ -33,10 +34,31 @@ def image_to_base64(img):
     img.save(buffered, format="JPEG")
     return base64.b64encode(buffered.getvalue()).decode('utf-8')
 
+def get_active_groq_vision_model(key):
+    """Groq üzerindeki en güncel ve aktif Vision modelini dinamik olarak seçer."""
+    headers = {"Authorization": f"Bearer {key}"}
+    try:
+        res = requests.get("https://api.groq.com/openai/v1/models", headers=headers).json()
+        if "data" in res:
+            for m in res["data"]:
+                m_id = m.get("id", "")
+                if "vision" in m_id and "preview" not in m_id:
+                    return m_id
+            for m in res["data"]:
+                m_id = m.get("id", "")
+                if "vision" in m_id:
+                    return m_id
+    except Exception:
+        pass
+    return "llama-3.2-11b-vision-instruct"
+
 def process_ledger_images(img1, img2, key):
     client = Groq(api_key=key)
     img1_b64 = image_to_base64(img1)
     img2_b64 = image_to_base64(img2)
+    
+    # Otomatik tespit edilen aktif model
+    active_model = get_active_groq_vision_model(key)
     
     prompt = """
     Bu iki görsel bir okulun yatırım defterine aittir (1. ve 2. Dönem).
@@ -58,9 +80,8 @@ def process_ledger_images(img1, img2, key):
     }
     """
     
-    # Aktif ve desteklenen Groq Vision Modeli
     response = client.chat.completions.create(
-        model="llama-3.2-90b-vision-preview",
+        model=active_model,
         messages=[
             {
                 "role": "user",
