@@ -4,7 +4,7 @@ import json
 import pandas as pd
 import streamlit as st
 from PIL import Image
-import google.generativeai as genai
+from google import genai
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -26,9 +26,8 @@ with col2:
     file_d2 = st.file_uploader("2. Dönem Defter Görseli", type=["jpg", "jpeg", "png"])
 
 def process_ledger_images(img1, img2, key):
-    genai.configure(api_key=key)
-    # Güncel ve hızlı model
-    model = genai.GenerativeModel('gemini-2.5-flash')
+    # Yeni Resmi Google GenAI Client Kurulumu
+    client = genai.Client(api_key=key)
     
     prompt = """
     Bu iki görsel bir okulun yatırım defterine aittir (1. ve 2. Dönem).
@@ -50,7 +49,11 @@ def process_ledger_images(img1, img2, key):
     }
     """
     
-    response = model.generate_content([prompt, img1, img2])
+    # Resmi ve Kesin Çalışan Model ismi: gemini-1.5-flash
+    response = client.models.generate_content(
+        model='gemini-1.5-flash',
+        contents=[prompt, img1, img2]
+    )
     
     clean_text = response.text.replace("```json", "").replace("```", "").strip()
     return json.loads(clean_text)
