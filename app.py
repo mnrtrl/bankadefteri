@@ -17,7 +17,7 @@ st.set_page_config(page_title="Yatırım Defteri Sağlama Uygulaması", layout="
 st.title("📊 Yatırım Defteri Sağlama ve Kontrol Sistemi")
 st.write("Lütfen 1. Dönem ve 2. Dönem defter görsellerini yükleyin.")
 
-# API Key'i Gizli Kasadan (Secrets) Otomatik Alır
+# API Key'i Gizli Kasadan (Secrets) Alır
 API_KEY = st.secrets.get("GEMINI_API_KEY", "")
 
 col1, col2 = st.columns(2)
@@ -33,27 +33,12 @@ def image_to_base64(img):
     img.save(buffered, format="JPEG")
     return base64.b64encode(buffered.getvalue()).decode('utf-8')
 
-def get_working_model(key):
-    """Kullanılabilir aktif modeli otomatik tespit eder (404 hatasını önler)."""
-    list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={key}"
-    try:
-        res = requests.get(list_url).json()
-        if 'models' in res:
-            for m in res['models']:
-                # Görsel işleyebilen aktif flash veya pro modelini bul
-                if 'generateContent' in m.get('supportedGenerationMethods', []) and 'flash' in m['name']:
-                    return m['name'].replace('models/', '')
-    except Exception:
-        pass
-    return "gemini-2.5-flash"  # Varsayılan güncel model
-
 def process_ledger_images(img1, img2, key):
     img1_b64 = image_to_base64(img1)
     img2_b64 = image_to_base64(img2)
     
-    # Aktif çalışan modeli otomatik seçer
-    active_model = get_working_model(key)
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{active_model}:generateContent?key={key}"
+    # Sürüm kodlarından bağımsız, daima aktif takma ad (gemini-flash)
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-flash:generateContent?key={key}"
     
     prompt = """
     Bu iki görsel bir okulun yatırım defterine aittir (1. ve 2. Dönem).
