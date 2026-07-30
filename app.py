@@ -5,7 +5,7 @@ import base64
 import pandas as pd
 import streamlit as st
 from PIL import Image
-from openai import OpenAI
+from groq import Groq
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -18,7 +18,7 @@ st.title("📊 Yatırım Defteri Sağlama ve Kontrol Sistemi")
 st.write("Lütfen 1. Dönem ve 2. Dönem defter görsellerini yükleyin.")
 
 # API Key'i Gizli Kasadan (Secrets) Alır
-API_KEY = st.secrets.get("OPENAI_API_KEY", "")
+API_KEY = st.secrets.get("GROQ_API_KEY", "")
 
 col1, col2 = st.columns(2)
 with col1:
@@ -34,7 +34,7 @@ def image_to_base64(img):
     return base64.b64encode(buffered.getvalue()).decode('utf-8')
 
 def process_ledger_images(img1, img2, key):
-    client = OpenAI(api_key=key)
+    client = Groq(api_key=key)
     img1_b64 = image_to_base64(img1)
     img2_b64 = image_to_base64(img2)
     
@@ -59,7 +59,7 @@ def process_ledger_images(img1, img2, key):
     """
     
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="llama-3.2-11b-vision-preview",
         messages=[
             {
                 "role": "user",
