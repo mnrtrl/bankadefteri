@@ -2,10 +2,10 @@ import os
 import io
 import json
 import base64
-import requests
 import pandas as pd
 import streamlit as st
 from PIL import Image
+from openai import OpenAI
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -18,7 +18,7 @@ st.title("📊 Yatırım Defteri Sağlama ve Kontrol Sistemi")
 st.write("Lütfen 1. Dönem ve 2. Dönem defter görsellerini yükleyin.")
 
 # API Key'i Gizli Kasadan (Secrets) Alır
-API_KEY = st.secrets.get("GEMINI_API_KEY", "")
+API_KEY = st.secrets.get("OPENAI_API_KEY", "")
 
 col1, col2 = st.columns(2)
 with col1:
@@ -34,11 +34,9 @@ def image_to_base64(img):
     return base64.b64encode(buffered.getvalue()).decode('utf-8')
 
 def process_ledger_images(img1, img2, key):
+    client = OpenAI(api_key=key)
     img1_b64 = image_to_base64(img1)
     img2_b64 = image_to_base64(img2)
-    
-    # Sürüm kodlarından bağımsız, daima aktif takma ad (gemini-flash)
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-flash:generateContent?key={key}"
     
     prompt = """
     Bu iki görsel bir okulun yatırım defterine aittir (1. ve 2. Dönem).
@@ -60,27 +58,22 @@ def process_ledger_images(img1, img2, key):
     }
     """
     
-    payload = {
-        "contents": [
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
             {
-                "parts": [
-                    {"text": prompt},
-                    {"inline_data": {"mime_type": "image/jpeg", "data": img1_b64}},
-                    {"inline_data": {"mime_type": "image/jpeg", "data": img2_b64}}
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img1_b64}"}},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img2_b64}"}}
                 ]
             }
-        ]
-    }
+        ],
+        response_format={"type": "json_object"}
+    )
     
-    headers = {'Content-Type': 'application/json'}
-    response = requests.post(url, headers=headers, json=payload)
-    
-    if response.status_code != 200:
-        raise Exception(f"API Bağlantı Hatası ({response.status_code}): {response.text}")
-        
-    res_json = response.json()
-    text_content = res_json['candidates'][0]['content']['parts'][0]['text']
-    clean_text = text_content.replace("```json", "").replace("```", "").strip()
+    clean_text = response.choices[0].message.content.strip()
     return json.loads(clean_text)
 
 def generate_pdf(data, is_success, errors):
