@@ -4,7 +4,7 @@ import json
 import pandas as pd
 import streamlit as st
 from PIL import Image
-from google import genai
+import google.generativeai as genai
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -16,7 +16,7 @@ st.set_page_config(page_title="Yatırım Defteri Sağlama Uygulaması", layout="
 st.title("📊 Yatırım Defteri Sağlama ve Kontrol Sistemi")
 st.write("Lütfen 1. Dönem ve 2. Dönem defter görsellerini yükleyin.")
 
-# API Key Girişi (Sadece 1 Kez Yapılır)
+# API Key Girişi
 api_key = st.sidebar.text_input("Google AI Studio API Key", type="password")
 
 col1, col2 = st.columns(2)
@@ -26,16 +26,17 @@ with col2:
     file_d2 = st.file_uploader("2. Dönem Defter Görseli", type=["jpg", "jpeg", "png"])
 
 def process_ledger_images(img1, img2, key):
-    client = genai.Client(api_key=key)
+    genai.configure(api_key=key)
+    model = genai.GenerativeModel('gemini-1.5-flash')
     
     prompt = """
     Bu iki görsel bir okulun yatırım defterine aittir (1. ve 2. Dönem).
     Lütfen her iki sayfadaki öğrenci isimlerini, tarihlerdeki yatırımları ve toplamları analiz et.
-    JSON formatında şu yapıda çıktı ver:
+    SADECE aşağıdaki JSON formatında yanıt ver, başka hiçbir açıklama ekleme:
     {
       "students": [
         {
-          "name": "Öğrenci Adı",
+          "name": "Öğrenci Adı Soyadı",
           "term1_total": 1300,
           "term2_total": 2100,
           "written_total": 3400
@@ -44,15 +45,11 @@ def process_ledger_images(img1, img2, key):
       "term1_date_total": 57050,
       "term2_date_total": 65400,
       "written_grand_total": 122450,
-      "uncertain_cells": [] 
+      "uncertain_cells": []
     }
-    Eğer okunmayan veya şüpheli bir rakam varsa 'uncertain_cells' dizisine ekle: [{"student": "Ad", "field": "Açıklama"}]
     """
     
-    response = client.models.generate_content(
-        model='gemini-2.5-flash',
-        contents=[prompt, img1, img2]
-    )
+    response = model.generate_content([prompt, img1, img2])
     
     # JSON Temizleme
     clean_text = response.text.replace("```json", "").replace("```", "").strip()
@@ -114,41 +111,44 @@ if st.button("Sağlamayı Yap ve Raporla") and file_d1 and file_d2:
         st.error("Lütfen sol menüden API Anahtarınızı girin.")
     else:
         with st.spinner("Görseller analiz ediliyor ve çapraz sağlama yapılıyor..."):
-            img1 = Image.open(file_d1)
-            img2 = Image.open(file_d2)
-            
-            result = process_ledger_images(img1, img2, api_key)
-            
-            # Teyit Uyarı Kontrolü
-            if result.get("uncertain_cells"):
-                st.warning("⚠️ Bazı rakamlar net okunamadı. Lütfen kontrol edip doğrulayın:")
-                for cell in result["uncertain_cells"]:
-                    st.text_input(f"{cell['student']} - {cell['field']}", value="")
-            
-            # Sağlama Mantığı
-            errors = []
-            calc_grand_total = 0
-            for student in result['students']:
-                c_tot = student['term1_total'] + student['term2_total']
-                calc_grand_total += c_tot
-                if c_tot != student['written_total']:
-                    errors.append(f"{student['name']}: Dönem toplamları ({c_tot} TL), yazılan toplam ile ({student['written_total']} TL) uyuşmuyor.")
-            
-            is_success = len(errors) == 0 and calc_grand_total == result['written_grand_total']
-            
-            # PDF Üretimi
-            pdf_bytes = generate_pdf(result, is_success, errors)
-            
-            if is_success:
-                st.success("✅ SAĞLAMA BAŞARILI! Tüm yatay ve dikey toplamlar %100 eşleşiyor.")
-            else:
-                st.error("❌ SAĞLAMA BAŞARISIZ! Hatalar tespit edildi.")
-                for e in errors:
-                    st.write(f"- {e}")
-                    
-            st.download_button(
-                label="📄 Detaylı PDF Raporunu İndir",
-                data=pdf_bytes,
-                file_name="Yatirim_Defteri_Saglama_Raporu.pdf",
-                mime="application/pdf"
-            )
+            try:
+                img1 = Image.open(file_d1)
+                img2 = Image.open(file_d2)
+                
+                result = process_ledger_images(img1, img2, api_key)
+                
+                # Teyit Uyarı Kontrolü
+                if result.get("uncertain_cells"):
+                    st.warning("⚠️ Bazı rakamlar net okunamadı. Lütfen kontrol edip doğrulayın:")
+                    for cell in result["uncertain_cells"]:
+                        st.text_input(f"{cell['student']} - {cell['field']}", value="")
+                
+                # Sağlama Mantığı
+                errors = []
+                calc_grand_total = 0
+                for student in result['students']:
+                    c_tot = student['term1_total'] + student['term2_total']
+                    calc_grand_total += c_tot
+                    if c_tot != student['written_total']:
+                        errors.append(f"{student['name']}: Dönem toplamları ({c_tot} TL), yazılan toplam ile ({student['written_total']} TL) uyuşmuyor.")
+                
+                is_success = len(errors) == 0 and calc_grand_total == result['written_grand_total']
+                
+                # PDF Üretimi
+                pdf_bytes = generate_pdf(result, is_success, errors)
+                
+                if is_success:
+                    st.success("✅ SAĞLAMA BAŞARILI! Tüm yatay ve dikey toplamlar %100 eşleşiyor.")
+                else:
+                    st.error("❌ SAĞLAMA BAŞARISIZ! Hatalar tespit edildi.")
+                    for e in errors:
+                        st.write(f"- {e}")
+                        
+                st.download_button(
+                    label="📄 Detaylı PDF Raporunu İndir",
+                    data=pdf_bytes,
+                    file_name="Yatirim_Defteri_Saglama_Raporu.pdf",
+                    mime="application/pdf"
+                )
+            except Exception as e:
+                st.error(f"Bir işlem hatası oluştu. Lütfen API anahtarınızı veya yüklenen görselleri kontrol edin: {e}")
