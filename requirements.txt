@@ -1,5 +1,5 @@
 streamlit
-openai
+groq
 pandas
 reportlab
 pillow
