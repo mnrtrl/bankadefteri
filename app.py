@@ -1,10 +1,11 @@
 import os
 import io
 import json
+import base64
+import requests
 import pandas as pd
 import streamlit as st
 from PIL import Image
-from google import genai
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -16,7 +17,7 @@ st.set_page_config(page_title="Yatırım Defteri Sağlama Uygulaması", layout="
 st.title("📊 Yatırım Defteri Sağlama ve Kontrol Sistemi")
 st.write("Lütfen 1. Dönem ve 2. Dönem defter görsellerini yükleyin.")
 
-# API Key'i Gizli Kasadan (Secrets) Otomatik Alır
+# API Key'i Gizli Kasadan (Secrets) Alır
 API_KEY = st.secrets.get("GEMINI_API_KEY", "")
 
 col1, col2 = st.columns(2)
@@ -25,14 +26,24 @@ with col1:
 with col2:
     file_d2 = st.file_uploader("2. Dönem Defter Görseli", type=["jpg", "jpeg", "png"])
 
+def image_to_base64(img):
+    buffered = io.BytesIO()
+    if img.mode != 'RGB':
+        img = img.convert('RGB')
+    img.save(buffered, format="JPEG")
+    return base64.b64encode(buffered.getvalue()).decode('utf-8')
+
 def process_ledger_images(img1, img2, key):
-    # Yeni Resmi Google GenAI Client Kurulumu
-    client = genai.Client(api_key=key)
+    img1_b64 = image_to_base64(img1)
+    img2_b64 = image_to_base64(img2)
+    
+    # Doğrudan REST API Endpoint'i (SDK bağımlılığı yok)
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={key}"
     
     prompt = """
     Bu iki görsel bir okulun yatırım defterine aittir (1. ve 2. Dönem).
     Lütfen her iki sayfadaki öğrenci isimlerini, tarihlerdeki yatırımları ve toplamları analiz et.
-    SADECE aşağıdaki JSON formatında yanıt ver, başka hiçbir açıklama ekleme:
+    SADECE aşağıdaki JSON formatında yanıt ver, başka hiçbir açıklama veya markdown kodu ekleme:
     {
       "students": [
         {
@@ -49,13 +60,27 @@ def process_ledger_images(img1, img2, key):
     }
     """
     
-    # Resmi ve Kesin Çalışan Model ismi: gemini-1.5-flash
-    response = client.models.generate_content(
-        model='gemini-1.5-flash',
-        contents=[prompt, img1, img2]
-    )
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": prompt},
+                    {"inline_data": {"mime_type": "image/jpeg", "data": img1_b64}},
+                    {"inline_data": {"mime_type": "image/jpeg", "data": img2_b64}}
+                ]
+            }
+        ]
+    }
     
-    clean_text = response.text.replace("```json", "").replace("```", "").strip()
+    headers = {'Content-Type': 'application/json'}
+    response = requests.post(url, headers=headers, json=payload)
+    
+    if response.status_code != 200:
+        raise Exception(f"API Bağlantı Hatası ({response.status_code}): {response.text}")
+        
+    res_json = response.json()
+    text_content = res_json['candidates'][0]['content']['parts'][0]['text']
+    clean_text = text_content.replace("```json", "").replace("```", "").strip()
     return json.loads(clean_text)
 
 def generate_pdf(data, is_success, errors):
