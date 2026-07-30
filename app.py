@@ -37,8 +37,8 @@ def process_ledger_images(img1, img2, key):
     img1_b64 = image_to_base64(img1)
     img2_b64 = image_to_base64(img2)
     
-    # Doğrudan REST API Endpoint'i (SDK bağımlılığı yok)
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={key}"
+    # Kesinlikle ücretsiz kotası açık ve çalışan resmi model endpoint'i
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}"
     
     prompt = """
     Bu iki görsel bir okulun yatırım defterine aittir (1. ve 2. Dönem).
