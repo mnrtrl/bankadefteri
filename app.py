@@ -58,8 +58,9 @@ def process_ledger_images(img1, img2, key):
     }
     """
     
+    # Aktif ve desteklenen Groq Vision Modeli
     response = client.chat.completions.create(
-        model="llama-3.2-11b-vision-preview",
+        model="llama-3.2-90b-vision-preview",
         messages=[
             {
                 "role": "user",
