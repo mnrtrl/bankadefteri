@@ -6,25 +6,23 @@ import pandas as pd
 import streamlit as st
 from PIL import Image
 from openai import OpenAI
-from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.pagesizes import A3, landscape
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
-from reportlab.pdfgen import canvas
 
-# Sayfa Yapılandırması
-st.set_page_config(page_title="Yatırım Defteri Sağlama Uygulaması", layout="wide")
+st.set_page_config(page_title="Yatırım Defteri Sağlama ve Matris Raporlama", layout="wide")
 
-st.title("📊 Yatırım Defteri Sağlama ve Kontrol Sistemi")
-st.write("Lütfen 1. Dönem, 2. Dönem veya her iki dönemin defter görsellerini yükleyin.")
+st.title("📊 Yatırım Defteri Birebir Matris Sağlama Sistemi")
+st.write("Lütfen 1. Dönem ve/veya 2. Dönem defter görsellerini yükleyin.")
 
 API_KEY = st.secrets.get("OPENAI_API_KEY", "")
 
 col1, col2 = st.columns(2)
 with col1:
-    file_d1 = st.file_uploader("1. Dönem Defter Görseli (Opsiyonel)", type=["jpg", "jpeg", "png"])
+    file_d1 = st.file_uploader("1. Dönem Defter Görseli", type=["jpg", "jpeg", "png"])
 with col2:
-    file_d2 = st.file_uploader("2. Dönem Defter Görseli (Opsiyonel)", type=["jpg", "jpeg", "png"])
+    file_d2 = st.file_uploader("2. Dönem Defter Görseli", type=["jpg", "jpeg", "png"])
 
 def image_to_base64(img):
     buffered = io.BytesIO()
@@ -33,42 +31,45 @@ def image_to_base64(img):
     img.save(buffered, format="JPEG")
     return base64.b64encode(buffered.getvalue()).decode('utf-8')
 
-def process_ledger_images(img1, img2, key):
+def make_turkish_safe(text):
+    if not isinstance(text, str):
+        return str(text)
+    replacements = {
+        'Ğ': 'G', 'ğ': 'g', 'Ş': 'S', 'ş': 's',
+        'İ': 'I', 'ı': 'i', 'Ö': 'O', 'ö': 'o',
+        'Ü': 'U', 'ü': 'u', 'Ç': 'C', 'ç': 'c'
+    }
+    for search, replace in replacements.items():
+        text = text.replace(search, replace)
+    return text
+
+def process_ledger_to_matrix(img1, img2, key):
     client = OpenAI(api_key=key)
     
     prompt = """
-    Sana bir okulun yatırım defterine ait 1. Dönem ve/veya 2. Dönem sayfalarının görselleri verildi.
-    Lütfen görsellerdeki öğrenci isimlerini, her öğrencinin dönem toplamlarını ve gün/tarih bazlı dikey sütun toplamlarını çok dikkatli analiz et.
+    Sana bir okulun yatırım defterine ait görseller verildi.
+    Lütfen sayfadaki TÜM ÖĞRENCİLERİ (istisnasız hepsini) ve TÜM TARİH SÜTUNLARINI tam bir matris olarak oku.
     
-    SADECE aşağıdaki JSON formatında yanıt ver, başka hiçbir açıklama veya markdown kodu ekleme:
+    Çıktıyı SADECE aşağıdaki JSON formatında ver, başka hiçbir yazı ekleme:
     {
+      "dates": ["22.09", "29.09", "06.10", "13.10", "18.10", "20.10", "27.10", "29.10", "10.11", "17.11", "24.11", "27.11", "12.05", "15.12", "22.12", "29.12", "12.01", "19.01"],
       "students": [
         {
-          "name": "Öğrenci Adı Soyadı",
-          "term1_total": 1300,
-          "term2_total": 2100,
+          "name": "Asel Gul Camruk",
+          "values": [200, 200, 0, 0, 100, 0, 200, 200, 0, 0, 0, 0, 0, 100, 100, 100, 0, 100],
           "written_total": 3400
         }
       ],
-      "daily_totals": [
-        {
-          "date": "22.9.25",
-          "calculated_sum": 1600,
-          "written_sum": 1600
-        }
-      ],
-      "grand_total_written": 122450
+      "column_written_totals": [1600, 3700, 6050, 4500, 5800, 4750, 6800, 3300, 5050, 5400, 4650, 6000, 3300, 4400, 2350, 5450, 1400, 6700],
+      "grand_written_total": 122450
     }
     """
     
     msg_content = [{"type": "text", "text": prompt}]
-    
     if img1 is not None:
-        img1_b64 = image_to_base64(img1)
-        msg_content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img1_b64}"}})
+        msg_content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_to_base64(img1)}"}})
     if img2 is not None:
-        img2_b64 = image_to_base64(img2)
-        msg_content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img2_b64}"}})
+        msg_content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_to_base64(img2)}"}})
 
     response = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -76,156 +77,97 @@ def process_ledger_images(img1, img2, key):
         response_format={"type": "json_object"}
     )
     
-    clean_text = response.choices[0].message.content.strip()
-    return json.loads(clean_text)
+    return json.loads(response.choices[0].message.content.strip())
 
-# Türkçe Karakter Düzeltme Desteği
-def make_turkish_safe(text):
-    if not isinstance(text, str):
-        return text
-    replacements = {
-        'Ğ': 'G', 'ğ': 'g',
-        'Ş': 'S', 'ş': 's',
-        'İ': 'I', 'ı': 'i',
-        'Ö': 'O', 'ö': 'o',
-        'Ü': 'U', 'ü': 'u',
-        'Ç': 'C', 'ç': 'c'
-    }
-    for search, replace in replacements.items():
-        text = text.replace(search, replace)
-    return text
-
-def generate_pdf(data, errors):
+def generate_matrix_pdf(data, errors):
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
+    # Tüm detayların sığması için A3 Yatay Format
+    doc = SimpleDocTemplate(buffer, pagesize=landscape(A3), rightMargin=15, leftMargin=15, topMargin=15, bottomMargin=15)
     elements = []
     styles = getSampleStyleSheet()
 
     is_success = len(errors) == 0
 
     if is_success:
-        title_style = ParagraphStyle('SuccessTitle', parent=styles['Heading1'], fontSize=24, textColor=colors.HexColor('#15803d'), alignment=1, spaceAfter=15)
-        elements.append(Paragraph(make_turkish_safe("SAGLAMA BASARILI"), title_style))
+        title_style = ParagraphStyle('SuccessTitle', parent=styles['Heading1'], fontSize=22, textColor=colors.HexColor('#15803d'), spaceAfter=10)
+        elements.append(Paragraph(make_turkish_safe("SAGLAMA BASARILI - Orijinal Defter Matris Raporu"), title_style))
     else:
-        title_style = ParagraphStyle('FailTitle', parent=styles['Heading1'], fontSize=24, textColor=colors.HexColor('#b91c1c'), alignment=1, spaceAfter=15)
-        elements.append(Paragraph(make_turkish_safe("SAGLAMA BASARISIZ"), title_style))
+        title_style = ParagraphStyle('FailTitle', parent=styles['Heading1'], fontSize=22, textColor=colors.HexColor('#b91c1c'), spaceAfter=10)
+        elements.append(Paragraph(make_turkish_safe("SAGLAMA BASARISIZ - Orijinal Defter Matris Raporu"), title_style))
         
-        err_style = ParagraphStyle('ErrText', parent=styles['Normal'], fontSize=11, textColor=colors.HexColor('#dc2626'))
+        err_style = ParagraphStyle('ErrText', parent=styles['Normal'], fontSize=10, textColor=colors.HexColor('#dc2626'))
         elements.append(Paragraph(make_turkish_safe("<b>TESPIT EDILEN HATALAR / OLASI NEDENLER:</b>"), err_style))
         for err in errors:
             elements.append(Paragraph(make_turkish_safe(f"• {err}"), err_style))
-        elements.append(Spacer(1, 12))
+        elements.append(Spacer(1, 10))
 
-    # 1. ÖĞRENCİ BAZLI SAĞLAMA TABLOSU
-    elements.append(Paragraph(make_turkish_safe("<b>1. Ogrenci Bazi Yatirim Toplamlari</b>"), styles['Heading3']))
-    table_data = [[
-        make_turkish_safe("Sira"), 
-        make_turkish_safe("Ogrenci Adi Soyadi"), 
-        make_turkish_safe("1. Donem Toplam"), 
-        make_turkish_safe("2. Donem Toplam"), 
-        make_turkish_safe("Hesaplanan Toplam"), 
-        make_turkish_safe("Defterdeki Toplam"), 
-        make_turkish_safe("Durum")
-    ]]
+    # Matris Tablosunun Oluşturulması
+    dates = data.get("dates", [])
+    header_row = ["Sira", "Ogrenci Adi Soyadi"] + [make_turkish_safe(d) for d in dates] + ["Hesaplanan", "Defterdeki", "Durum"]
     
-    for idx, st_info in enumerate(data.get('students', []), 1):
-        t1 = st_info.get('term1_total', 0)
-        t2 = st_info.get('term2_total', 0)
-        written = st_info.get('written_total', 0)
-        calc = t1 + t2
+    table_data = [header_row]
+    
+    for idx, st_info in enumerate(data.get("students", []), 1):
+        vals = st_info.get("values", [])
+        calc_sum = sum(vals)
+        written_sum = st_info.get("written_total", 0)
+        status = "OK" if calc_sum == written_sum else "HATALI"
         
-        status = "OK" if calc == written else "HATALI"
-        table_data.append([
-            str(idx),
-            make_turkish_safe(st_info.get('name', 'Bilinmiyor')),
-            f"{t1:,} TL",
-            f"{t2:,} TL",
-            f"{calc:,} TL",
-            f"{written:,} TL",
-            status
-        ])
+        row = [str(idx), make_turkish_safe(st_info.get("name", ""))]
+        row.extend([f"{v}" if v > 0 else "-" for v in vals])
+        row.extend([f"{calc_sum:,}", f"{written_sum:,}", status])
+        table_data.append(row)
 
-    pdf_table = Table(table_data, colWidths=[35, 220, 100, 100, 110, 110, 60])
-    pdf_table.setStyle(TableStyle([
+    # Dikey Sütun Toplam Satırları
+    col_calculated = []
+    num_dates = len(dates)
+    for d_idx in range(num_dates):
+        d_sum = sum(st_info.get("values", [])[d_idx] for st_info in data.get("students", []) if d_idx < len(st_info.get("values", [])))
+        col_calculated.append(d_sum)
+        
+    row_calc_total = ["", "Hesaplanan Sutun Toplamı"] + [f"{c:,}" for c in col_calculated] + ["-", "-", "-"]
+    table_data.append(row_calc_total)
+
+    # Renklendirme ve Stil
+    matrix_table = Table(table_data, repeatRows=1)
+    matrix_table.setStyle(TableStyle([
         ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1e293b')),
         ('TEXTCOLOR', (0,0), (-1,0), colors.white),
         ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-        ('BOTTOMPADDING', (0,0), (-1,0), 6),
-        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#cbd5e1')),
+        ('FONTSIZE', (0,0), (-1,-1), 8),
+        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#94a3b8')),
+        ('BACKGROUND', (1,-1), (-1,-1), colors.HexColor('#f1f5f9')),
+        ('TEXTCOLOR', (1,-1), (-1,-1), colors.HexColor('#0f172a')),
     ]))
-    elements.append(pdf_table)
-    elements.append(Spacer(1, 15))
-
-    # 2. GÜN BAZLI YATIRIM SAĞLAMA TABLOSU
-    if data.get('daily_totals'):
-        elements.append(Paragraph(make_turkish_safe("<b>2. Gun / Tarih Bazli Sutun Toplamlari Saglamasi</b>"), styles['Heading3']))
-        daily_table_data = [[
-            make_turkish_safe("Tarih"), 
-            make_turkish_safe("Hesaplanan Gunluk Toplam"), 
-            make_turkish_safe("Defterde Yazan Gunluk Toplam"), 
-            make_turkish_safe("Durum")
-        ]]
-        
-        for d in data['daily_totals']:
-            c_sum = d.get('calculated_sum', 0)
-            w_sum = d.get('written_sum', 0)
-            d_status = "OK" if c_sum == w_sum else "HATALI"
-            daily_table_data.append([
-                make_turkish_safe(d.get('date', '-')),
-                f"{c_sum:,} TL",
-                f"{w_sum:,} TL",
-                d_status
-            ])
-            
-        d_table = Table(daily_table_data, colWidths=[120, 200, 200, 115])
-        d_table.setStyle(TableStyle([
-            ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#334155')),
-            ('TEXTCOLOR', (0,0), (-1,0), colors.white),
-            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-            ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#cbd5e1')),
-        ]))
-        elements.append(d_table)
-
+    
+    elements.append(matrix_table)
     doc.build(elements)
     buffer.seek(0)
     return buffer
 
-if st.button("Sağlamayı Yap ve Raporla") and (file_d1 or file_d2):
+if st.button("Sağlamayı Yap ve Matris Raporunu Üret") and (file_d1 or file_d2):
     if not API_KEY:
         st.error("Sistem API Anahtarı tanımlanmamış. Lütfen Streamlit Secrets alanını kontrol edin.")
     else:
-        with st.spinner("Görseller detaylı şekilde analiz ediliyor ve çapraz sağlama yapılıyor..."):
+        with st.spinner("Tüm öğrenciler ve kareli defter hücresel matrisi oluşturuluyor..."):
             try:
                 img1 = Image.open(file_d1) if file_d1 else None
                 img2 = Image.open(file_d2) if file_d2 else None
                 
-                result = process_ledger_images(img1, img2, API_KEY)
+                result = process_ledger_to_matrix(img1, img2, API_KEY)
                 
-                # Hata Tespiti
                 errors = []
                 for student in result.get('students', []):
-                    c_tot = student.get('term1_total', 0) + student.get('term2_total', 0)
+                    c_tot = sum(student.get('values', []))
                     if c_tot != student.get('written_total', 0):
-                        errors.append(f"{student.get('name')}: Dönem toplamları ({c_tot} TL), defterde yazan toplam ({student.get('written_total')} TL) ile uyuşmuyor.")
+                        errors.append(f"{student.get('name')}: Hücre yatırımları toplamı ({c_tot} TL), defterde yazan toplam ({student.get('written_total')} TL) ile uyuşmuyor.")
                 
-                for d in result.get('daily_totals', []):
-                    if d.get('calculated_sum') != d.get('written_sum'):
-                        errors.append(f"{d.get('date')} Tarihli Sütun: Sütun içi toplam ({d.get('calculated_sum')} TL), defter altındaki dikey toplam ({d.get('written_sum')} TL) ile uyuşmuyor.")
-
-                is_success = len(errors) == 0
-                pdf_bytes = generate_pdf(result, errors)
+                pdf_bytes = generate_matrix_pdf(result, errors)
                 
-                if is_success:
-                    st.success("✅ SAĞLAMA BAŞARILI! Tüm yatay ve dikey toplamlar %100 eşleşiyor.")
-                else:
-                    st.error("❌ SAĞLAMA BAŞARISIZ! Hatalar tespit edildi.")
-                    for e in errors:
-                        st.write(f":red[• {e}]")
-                        
                 st.download_button(
-                    label="📄 Detaylı PDF Raporunu İndir",
+                    label="📄 Tüm Öğrencileri İçeren Birebir Matris PDF Raporunu İndir",
                     data=pdf_bytes,
-                    file_name="Yatirim_Defteri_Saglama_Raporu.pdf",
+                    file_name="Defter_Birebir_Matris_Saglama_Raporu.pdf",
                     mime="application/pdf"
                 )
             except Exception as e:
