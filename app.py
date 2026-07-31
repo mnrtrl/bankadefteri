@@ -45,31 +45,15 @@ def make_turkish_safe(text):
     return text
 
 def fix_dates_with_calendar(raw_dates):
-    """Pazartesi günleri döngüsüne göre okunamayan veya eksik tarihleri tahmin eder."""
+    """Pazartesi döngüsüyle tarihleri saat formatına kaçmayacak net metin formatına dönüştürür."""
     fixed_dates = []
-    base_date = None
+    base_date = datetime(2025, 9, 22) # İlk Pazartesi
     
-    # İlk geçerli tarihi bul
-    for d in raw_dates:
-        try:
-            # 22.09 gibi formatları tarihe çevir
-            clean_d = d.replace("?", "").strip()
-            day, month = map(int, clean_d.split("."))
-            base_date = datetime(2025, month, day)
-            break
-        except Exception:
-            continue
-            
-    if not base_date:
-        return raw_dates
-
-    current_monday = base_date
-    for d in raw_dates:
-        if "?" in d or len(d) < 3:
-            fixed_dates.append(current_monday.strftime("%d.%m"))
-        else:
-            fixed_dates.append(d)
-        current_monday += timedelta(days=7) # Her hafta Pazartesi
+    current_date = base_date
+    for idx in range(len(raw_dates)):
+        # Tarihlerin saat sanılmaması için gün/ay/yıl metni (Örn: "22/09/2025")
+        fixed_dates.append(current_date.strftime("%d/%m/%Y"))
+        current_date += timedelta(days=7)
         
     return fixed_dates
 
@@ -78,17 +62,17 @@ def read_ledger_strict(img1, img2, key):
     
     prompt = """
     Sana bir okulun yatırım defterine ait görseller verildi.
-    Görselleri çok dikkatli incele. KESİNLİKLE İSİM, SAYI VEYA TARİH UYDURMA.
-    Okuyamadığın veya emin olamadığın hücrelere KESİNLİKLE null veya "?" koy.
+    İSTİSNASIZ TÜM ÖĞRENCİLERİ (11 Öğrenci) VE TÜM TARİH SÜTUNLARINI OKU. KESİNLİKLE İSİM VEYA RAKAM UYDURMA.
+    Okuyamadığın veya emin olamadığın sayısal hücrelere 0 yaz.
     
     Çıktıyı SADECE aşağıdaki JSON formatında ver:
     {
       "read_accuracy_percentage": 85,
-      "dates": ["22.09", "29.09", "06.10", "?", "20.10"],
+      "dates": ["22.09.2025", "29.09.2025", "06.10.2025", "13.10.2025", "20.10.2025"],
       "students": [
         {
           "name": "Asel Gul Camruk",
-          "values": [200, 200, null, 100, 200],
+          "values": [200, 200, 0, 100, 200],
           "written_total": 3400
         }
       ]
@@ -135,8 +119,8 @@ def generate_pdf(df_data, dates, errors):
     
     for idx, row in df_data.iterrows():
         name = make_turkish_safe(row["Öğrenci Adı Soyadı"])
-        written = row["Defterdeki Toplam"]
-        vals = [row[d] for d in dates]
+        written = int(row["Defterdeki Toplam"])
+        vals = [int(row[d]) for d in dates]
         calc_sum = sum(vals)
         status = "OK" if calc_sum == written else "HATALI"
         
@@ -162,7 +146,7 @@ if st.button("Görselleri Tara ve Kontrol Et") and (file_d1 or file_d2):
     if not API_KEY:
         st.error("Sistem API Anahtarı tanımlanmamış. Lütfen Streamlit Secrets alanını kontrol edin.")
     else:
-        with st.spinner("Görsel taranıyor, uydurma veri engelleniyor ve takvim eşleştiriliyor..."):
+        with st.spinner("Görsel taranıyor ve takvim eşleştiriliyor..."):
             img1 = Image.open(file_d1) if file_d1 else None
             img2 = Image.open(file_d2) if file_d2 else None
             
@@ -172,9 +156,9 @@ if st.button("Görselleri Tara ve Kontrol Et") and (file_d1 or file_d2):
             if accuracy < 75:
                 st.error(f"❌ Görsel verilerinin çoğunluğu (%{100-accuracy}) okunamadı. Lütfen daha net bir fotoğraf yükleyin.")
             else:
-                st.success(f"✅ Görsel okuma oranı: %{accuracy}. Okunamayan veya eksik hücreler tespit edildi.")
+                st.success(f"✅ Görsel okuma oranı: %{accuracy}. Lütfen aşağıdaki tablodan eksik verileri kontrol edip onaylayın.")
                 
-                # Arka Plan Takvimiyle Tarih Düzeltme
+                # Arka Plan Takvimiyle Tarih Formatını Sabitleme
                 fixed_dates = fix_dates_with_calendar(res.get("dates", []))
                 
                 # Tablo Verisi Hazırlama
@@ -183,9 +167,9 @@ if st.button("Görselleri Tara ve Kontrol Et") and (file_d1 or file_d2):
                     row_dict = {"Öğrenci Adı Soyadı": st_info.get("name", "")}
                     vals = st_info.get("values", [])
                     for idx, d in enumerate(fixed_dates):
-                        val = vals[idx] if idx < len(vals) else None
-                        row_dict[d] = val if val is not None else 0
-                    row_dict["Defterdeki Toplam"] = st_info.get("written_total", 0)
+                        val = vals[idx] if idx < len(vals) else 0
+                        row_dict[d] = int(val) if val is not None else 0
+                    row_dict["Defterdeki Toplam"] = int(st_info.get("written_total", 0))
                     students_data.append(row_dict)
                 
                 st.session_state["raw_df"] = pd.DataFrame(students_data)
@@ -194,17 +178,27 @@ if st.button("Görselleri Tara ve Kontrol Et") and (file_d1 or file_d2):
 # ADIM 2: İNTERAKTİF DÜZELTME TABLOSU
 if "raw_df" in st.session_state:
     st.subheader("📝 Öğretmen Veri Onay ve Düzeltme Tablosu")
-    st.info("Eksik veya '0' olarak görünen hücreleri deftere bakarak düzeltebilir, ardından raporu onaylayabilirsiniz.")
+    st.info("Tablodaki '0' görünen veya eksik olan hücreleri defterinize bakarak düzeltebilir, ardından raporu onaylayabilirsiniz.")
     
-    edited_df = st.data_editor(st.session_state["raw_df"], num_rows="dynamic")
+    # Tarih kolonlarını metin (string) biçimine zorlayarak saat algılanmasını engelliyoruz
+    column_config = {col: st.column_config.NumberColumn(format="%d") for col in st.session_state["dates"]}
+    column_config["Öğrenci Adı Soyadı"] = st.column_config.TextColumn()
+    column_config["Defterdeki Toplam"] = st.column_config.NumberColumn(format="%d")
+
+    edited_df = st.data_editor(
+        st.session_state["raw_df"], 
+        column_config=column_config,
+        num_rows="dynamic",
+        use_container_width=True
+    )
     
     if st.button("Verileri Onayla ve Raporu Üret"):
         dates = st.session_state["dates"]
         errors = []
         
         for idx, row in edited_df.iterrows():
-            calc_sum = sum(row[d] for d in dates)
-            written = row["Defterdeki Toplam"]
+            calc_sum = sum(int(row[d]) for d in dates)
+            written = int(row["Defterdeki Toplam"])
             if calc_sum != written:
                 errors.append(f"{row['Öğrenci Adı Soyadı']}: Girilen Toplam ({calc_sum} TL), Defterdeki Toplam ({written} TL) ile uyuşmuyor.")
                 
