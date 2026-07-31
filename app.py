@@ -1,36 +1,31 @@
-import os
 import io
-import json
-import base64
-from datetime import datetime, timedelta
+import datetime
 import pandas as pd
 import streamlit as st
-from PIL import Image
-from openai import OpenAI
 from reportlab.lib.pagesizes import A3, landscape
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
-st.set_page_config(page_title="Yatırım Defteri İnteraktif Sağlama Sistemi", layout="wide")
+st.set_page_config(page_title="Okul Yatırım Defteri Yönetim Sistemi", layout="wide")
 
-st.title("📊 Yatırım Defteri Kontrol ve İnteraktif Onay Sistemi")
-st.write("Lütfen 1. Dönem ve/veya 2. Dönem defter görsellerini yükleyin.")
+# Session State Hazırlıkları (Sistem Hafızası)
+if "users" not in st.session_state:
+    st.session_state["users"] = {
+        "mnrtrl": {"pass": "123456", "role": "main_admin", "name": "Münür Teralı (Ana Yönetici)"}
+    }
 
-API_KEY = st.secrets.get("OPENAI_API_KEY", "")
+if "teachers_classes" not in st.session_state:
+    st.session_state["teachers_classes"] = {} # teacher_username: class_name
 
-col1, col2 = st.columns(2)
-with col1:
-    file_d1 = st.file_uploader("1. Dönem Defter Görseli", type=["jpg", "jpeg", "png"])
-with col2:
-    file_d2 = st.file_uploader("2. Dönem Defter Görseli", type=["jpg", "jpeg", "png"])
+if "students" not in st.session_state:
+    st.session_state["students"] = {} # class_name: [student_names]
 
-def image_to_base64(img):
-    buffered = io.BytesIO()
-    if img.mode != 'RGB':
-        img = img.convert('RGB')
-    img.save(buffered, format="JPEG")
-    return base64.b64encode(buffered.getvalue()).decode('utf-8')
+if "ledger_data" not in st.session_state:
+    st.session_state["ledger_data"] = {} # class_name: {date_str: {student_name: amount}}
+
+if "logged_user" not in st.session_state:
+    st.session_state["logged_user"] = None
 
 def make_turkish_safe(text):
     if not isinstance(text, str):
@@ -44,176 +39,241 @@ def make_turkish_safe(text):
         text = text.replace(search, replace)
     return text
 
-def fix_dates_with_calendar(raw_dates):
-    """Pazartesi döngüsüyle tarihleri saat formatına kaçmayacak net metin formatına dönüştürür."""
-    fixed_dates = []
-    base_date = datetime(2025, 9, 22) # İlk Pazartesi
+# ---------------------------------------------------------
+# GİRİŞ EKRANI (LOGIN)
+# ---------------------------------------------------------
+if not st.session_state["logged_user"]:
+    st.title("🔒 Okul Yatırım Defteri Sistem Girişi")
     
-    current_date = base_date
-    for idx in range(len(raw_dates)):
-        # Tarihlerin saat sanılmaması için gün/ay/yıl metni (Örn: "22/09/2025")
-        fixed_dates.append(current_date.strftime("%d/%m/%Y"))
-        current_date += timedelta(days=7)
-        
-    return fixed_dates
-
-def read_ledger_strict(img1, img2, key):
-    client = OpenAI(api_key=key)
-    
-    prompt = """
-    Sana bir okulun yatırım defterine ait görseller verildi.
-    İSTİSNASIZ TÜM ÖĞRENCİLERİ (11 Öğrenci) VE TÜM TARİH SÜTUNLARINI OKU. KESİNLİKLE İSİM VEYA RAKAM UYDURMA.
-    Okuyamadığın veya emin olamadığın sayısal hücrelere 0 yaz.
-    
-    Çıktıyı SADECE aşağıdaki JSON formatında ver:
-    {
-      "read_accuracy_percentage": 85,
-      "dates": ["22.09.2025", "29.09.2025", "06.10.2025", "13.10.2025", "20.10.2025"],
-      "students": [
-        {
-          "name": "Asel Gul Camruk",
-          "values": [200, 200, 0, 100, 200],
-          "written_total": 3400
-        }
-      ]
-    }
-    """
-    
-    msg_content = [{"type": "text", "text": prompt}]
-    if img1 is not None:
-        msg_content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_to_base64(img1)}"}})
-    if img2 is not None:
-        msg_content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_to_base64(img2)}"}})
-
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": msg_content}],
-        response_format={"type": "json_object"}
-    )
-    
-    return json.loads(response.choices[0].message.content.strip())
-
-def generate_pdf(df_data, dates, errors):
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=landscape(A3), rightMargin=10, leftMargin=10, topMargin=10, bottomMargin=10)
-    elements = []
-    styles = getSampleStyleSheet()
-
-    is_success = len(errors) == 0
-
-    if is_success:
-        title_style = ParagraphStyle('SuccessTitle', parent=styles['Heading1'], fontSize=20, textColor=colors.HexColor('#15803d'), spaceAfter=8)
-        elements.append(Paragraph(make_turkish_safe("SAGLAMA BASARILI - Onaylanmis Defter Matris Raporu"), title_style))
-    else:
-        title_style = ParagraphStyle('FailTitle', parent=styles['Heading1'], fontSize=20, textColor=colors.HexColor('#b91c1c'), spaceAfter=8)
-        elements.append(Paragraph(make_turkish_safe("SAGLAMA BASARISIZ - Onaylanmis Defter Matris Raporu"), title_style))
-        
-        err_style = ParagraphStyle('ErrText', parent=styles['Normal'], fontSize=9, textColor=colors.HexColor('#dc2626'))
-        elements.append(Paragraph(make_turkish_safe("<b>TESPIT EDILEN HATALAR:</b>"), err_style))
-        for err in errors:
-            elements.append(Paragraph(make_turkish_safe(f"• {err}"), err_style))
-        elements.append(Spacer(1, 8))
-
-    header_row = ["Sira", "Ogrenci Adi Soyadi"] + [make_turkish_safe(d) for d in dates] + ["Hesaplanan", "Defterdeki", "Durum"]
-    table_data = [header_row]
-    
-    for idx, row in df_data.iterrows():
-        name = make_turkish_safe(row["Öğrenci Adı Soyadı"])
-        written = int(row["Defterdeki Toplam"])
-        vals = [int(row[d]) for d in dates]
-        calc_sum = sum(vals)
-        status = "OK" if calc_sum == written else "HATALI"
-        
-        r = [str(idx+1), name] + [f"{v:,}" if v > 0 else "-" for v in vals] + [f"{calc_sum:,}", f"{written:,}", status]
-        table_data.append(r)
-
-    matrix_table = Table(table_data, repeatRows=1)
-    matrix_table.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1e293b')),
-        ('TEXTCOLOR', (0,0), (-1,0), colors.white),
-        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-        ('FONTSIZE', (0,0), (-1,-1), 7),
-        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#94a3b8')),
-    ]))
-    
-    elements.append(matrix_table)
-    doc.build(elements)
-    buffer.seek(0)
-    return buffer
-
-# ADIM 1: GÖRSEL ANALİZİ
-if st.button("Görselleri Tara ve Kontrol Et") and (file_d1 or file_d2):
-    if not API_KEY:
-        st.error("Sistem API Anahtarı tanımlanmamış. Lütfen Streamlit Secrets alanını kontrol edin.")
-    else:
-        with st.spinner("Görsel taranıyor ve takvim eşleştiriliyor..."):
-            img1 = Image.open(file_d1) if file_d1 else None
-            img2 = Image.open(file_d2) if file_d2 else None
-            
-            res = read_ledger_strict(img1, img2, API_KEY)
-            accuracy = res.get("read_accuracy_percentage", 0)
-            
-            if accuracy < 75:
-                st.error(f"❌ Görsel verilerinin çoğunluğu (%{100-accuracy}) okunamadı. Lütfen daha net bir fotoğraf yükleyin.")
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        username = st.text_input("Kullanıcı Adı")
+        password = st.text_input("Şifre", type="password")
+        if st.button("Giriş Yap"):
+            users = st.session_state["users"]
+            if username in users and users[username]["pass"] == password:
+                st.session_state["logged_user"] = username
+                st.rerun()
             else:
-                st.success(f"✅ Görsel okuma oranı: %{accuracy}. Lütfen aşağıdaki tablodan eksik verileri kontrol edip onaylayın.")
-                
-                # Arka Plan Takvimiyle Tarih Formatını Sabitleme
-                fixed_dates = fix_dates_with_calendar(res.get("dates", []))
-                
-                # Tablo Verisi Hazırlama
-                students_data = []
-                for st_info in res.get("students", []):
-                    row_dict = {"Öğrenci Adı Soyadı": st_info.get("name", "")}
-                    vals = st_info.get("values", [])
-                    for idx, d in enumerate(fixed_dates):
-                        val = vals[idx] if idx < len(vals) else 0
-                        row_dict[d] = int(val) if val is not None else 0
-                    row_dict["Defterdeki Toplam"] = int(st_info.get("written_total", 0))
-                    students_data.append(row_dict)
-                
-                st.session_state["raw_df"] = pd.DataFrame(students_data)
-                st.session_state["dates"] = fixed_dates
+                st.error("Kullanıcı adı veya şifre hatalı!")
+    st.stop()
 
-# ADIM 2: İNTERAKTİF DÜZELTME TABLOSU
-if "raw_df" in st.session_state:
-    st.subheader("📝 Öğretmen Veri Onay ve Düzeltme Tablosu")
-    st.info("Tablodaki '0' görünen veya eksik olan hücreleri defterinize bakarak düzeltebilir, ardından raporu onaylayabilirsiniz.")
-    
-    # Tarih kolonlarını metin (string) biçimine zorlayarak saat algılanmasını engelliyoruz
-    column_config = {col: st.column_config.NumberColumn(format="%d") for col in st.session_state["dates"]}
-    column_config["Öğrenci Adı Soyadı"] = st.column_config.TextColumn()
-    column_config["Defterdeki Toplam"] = st.column_config.NumberColumn(format="%d")
+# Oturum Açan Kullanıcı Bilgileri
+curr_user = st.session_state["logged_user"]
+user_info = st.session_state["users"][curr_user]
+user_role = user_info["role"]
 
-    edited_df = st.data_editor(
-        st.session_state["raw_df"], 
-        column_config=column_config,
-        num_rows="dynamic",
-        use_container_width=True
-    )
+# Üst Menü / Çıkış Yap
+col_head1, col_head2 = st.columns([4, 1])
+with col_head1:
+    st.caption(f"Aktif Kullanıcı: **{user_info['name']}** ({user_role.upper()})")
+with col_head2:
+    if st.button("🚪 Çıkış Yap"):
+        st.session_state["logged_user"] = None
+        st.rerun()
+
+st.divider()
+
+# ---------------------------------------------------------
+# YÖNETİCİ PANELİ (MAIN ADMIN & ADMIN)
+# ---------------------------------------------------------
+if user_role in ["main_admin", "admin"]:
+    st.header("👑 Yönetici Kontrol Paneli")
     
-    if st.button("Verileri Onayla ve Raporu Üret"):
-        dates = st.session_state["dates"]
-        errors = []
+    tab1, tab2, tab3 = st.tabs(["👥 Kullanıcı & Öğretmen Atama", "👀 Sınıf & Veri İzleme", "📄 PDF Rapor Al"])
+    
+    with tab1:
+        st.subheader("Yeni Kullanıcı Ekle")
+        c1, c2, c3, c4 = st.columns(4)
+        new_u = c1.text_input("Kullanıcı Adı", key="new_u")
+        new_p = c2.text_input("Şifre", key="new_p")
+        new_n = c3.text_input("Adı Soyadı", key="new_n")
         
-        for idx, row in edited_df.iterrows():
-            calc_sum = sum(int(row[d]) for d in dates)
-            written = int(row["Defterdeki Toplam"])
-            if calc_sum != written:
-                errors.append(f"{row['Öğrenci Adı Soyadı']}: Girilen Toplam ({calc_sum} TL), Defterdeki Toplam ({written} TL) ile uyuşmuyor.")
+        # Ana yönetici alt yönetici de atayabilir
+        role_options = ["teacher", "admin"] if user_role == "main_admin" else ["teacher"]
+        new_r = c4.selectbox("Rol", role_options, key="new_r")
+        
+        if st.button("Kullanıcı Oluştur"):
+            if new_u and new_p and new_n:
+                st.session_state["users"][new_u] = {"pass": new_p, "role": new_r, "name": new_n}
+                st.success(f"'{new_n}' başarıyla eklendi.")
+            else:
+                st.warning("Lütfen tüm alanları doldurun.")
                 
-        pdf_bytes = generate_pdf(edited_df, dates, errors)
-        
-        if len(errors) == 0:
-            st.success("✅ SAĞLAMA BAŞARILI! Tüm veriler tam olarak eşleşti.")
+        st.divider()
+        st.subheader("Öğretmene Sınıf Atama")
+        teachers = [u for u, data in st.session_state["users"].items() if data["role"] == "teacher"]
+        if teachers:
+            tc1, tc2 = st.columns(2)
+            sel_teacher = tc1.selectbox("Öğretmen Seç", teachers)
+            assigned_class = tc2.text_input("Atanacak Sınıf (Örn: 2B)", value=st.session_state["teachers_classes"].get(sel_teacher, ""))
+            if st.button("Sınıfı Atayarak Kaydet"):
+                st.session_state["teachers_classes"][sel_teacher] = assigned_class
+                st.success(f"{sel_teacher} kullanıcısı {assigned_class} sınıfına atandı.")
         else:
-            st.error("❌ SAĞLAMA BAŞARISIZ! Uyuşmayan satırlar tespit edildi.")
-            for e in errors:
-                st.write(f":red[• {e}]")
+            st.info("Sistemde henüz kayıtlı öğretmen bulunmuyor.")
+
+    with tab2:
+        st.subheader("Sınıf Verilerini Canlı İzleme")
+        all_classes = list(set(st.session_state["teachers_classes"].values()))
+        if all_classes:
+            selected_class = st.selectbox("İzlenecek Sınıfı Seçin", all_classes)
+            students = st.session_state["students"].get(selected_class, [])
+            st.write(f"**{selected_class} Sınıfı Öğrenci Sayısı:** {len(students)}")
+            
+            class_data = st.session_state["ledger_data"].get(selected_class, {})
+            if class_data:
+                df_view = pd.DataFrame(class_data).fillna(0)
+                st.dataframe(df_view, use_container_width=True)
+            else:
+                st.info("Bu sınıfa ait henüz girilmiş haftalık veri yok.")
+        else:
+            st.info("Henüz oluşturulmuş bir sınıf yok.")
+
+    with tab3:
+        st.subheader("Orijinal Defter Formatında PDF Raporu İndir")
+        all_classes = list(set(st.session_state["teachers_classes"].values()))
+        if all_classes:
+            pdf_class = st.selectbox("PDF Rapor Alınacak Sınıf", all_classes, key="pdf_cl")
+            term_option = st.radio("Dönem Seçimi", ["Tüm Yıl", "1. Dönem", "2. Dönem"], horizontal=True)
+            
+            if st.button("📄 Orijinal PDF Raporu Oluştur"):
+                # PDF Hazırlama Mantığı
+                students = st.session_state["students"].get(pdf_class, [])
+                class_data = st.session_state["ledger_data"].get(pdf_class, {})
                 
-        st.download_button(
-            label="📄 Onaylanmış Detaylı PDF Raporunu İndir",
-            data=pdf_bytes,
-            file_name="Onaylanmis_Yatirim_Defteri_Raporu.pdf",
-            mime="application/pdf"
-        )
+                if not students or not class_data:
+                    st.error("Rapor oluşturmak için yeterli veri veya öğrenci kaydı bulunamadı.")
+                else:
+                    buffer = io.BytesIO()
+                    doc = SimpleDocTemplate(buffer, pagesize=landscape(A3), rightMargin=10, leftMargin=10, topMargin=10, bottomMargin=10)
+                    elements = []
+                    styles = getSampleStyleSheet()
+                    
+                    title = f"{pdf_class} SINIFI YATIRIM DEFTERI SAĞLAMA RAPORU ({term_option.upper()})"
+                    elements.append(Paragraph(make_turkish_safe(title), styles['Heading1']))
+                    elements.append(Spacer(1, 10))
+                    
+                    dates = sorted(list(class_data.keys()))
+                    header = ["Sira", "Ogrenci Adi Soyadi"] + [make_turkish_safe(d) for d in dates] + ["Toplam", "Durum"]
+                    table_data = [header]
+                    
+                    for idx, st_name in enumerate(students, 1):
+                        row = [str(idx), make_turkish_safe(st_name)]
+                        st_total = 0
+                        for d in dates:
+                            amt = class_data.get(d, {}).get(st_name, 0)
+                            st_total += amt
+                            row.append(f"{amt:,}" if amt > 0 else "-")
+                        row.extend([f"{st_total:,} TL", "OK"])
+                        table_data.append(row)
+                        
+                    pdf_table = Table(table_data, repeatRows=1)
+                    pdf_table.setStyle(TableStyle([
+                        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1e293b')),
+                        ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+                        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+                        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#94a3b8')),
+                        ('FONTSIZE', (0,0), (-1,-1), 8),
+                    ]))
+                    elements.append(pdf_table)
+                    doc.build(elements)
+                    buffer.seek(0)
+                    
+                    st.download_button(
+                        label="⬇️ PDF Raporunu Bilgisayara İndir",
+                        data=buffer,
+                        file_name=f"{pdf_class}_Yatirim_Defteri.pdf",
+                        mime="application/pdf"
+                    )
+
+# ---------------------------------------------------------
+# ÖĞRETMEN PANELİ (TEACHER)
+# ---------------------------------------------------------
+elif user_role == "teacher":
+    my_class = st.session_state["teachers_classes"].get(curr_user, None)
+    
+    if not my_class:
+        st.warning("Henüz yönetici tarafından bir sınıfa atanmadınız. Lütfen yöneticinizle iletişime geçin.")
+        st.stop()
+        
+    st.header(f"🏫 {my_class} Sınıfı Öğretmen Paneli")
+    
+    t_tab1, t_tab2 = st.tabs(["📝 Haftalık Yatırım Girişi", "👨‍🎓 Öğrenci Listesi Tanımlama"])
+    
+    # Sınıf Öğrencileri
+    if my_class not in st.session_state["students"]:
+        st.session_state["students"][my_class] = []
+        
+    with t_tab2:
+        st.subheader("Sınıf Öğrenci Listesini Ekle / Düzenle")
+        raw_st_list = st.text_area("Öğrenci İsimlerini Her Satıra Bir İsim Gelecek Şekilde Yazın:", 
+                                   value="\n".join(st.session_state["students"][my_class]), height=200)
+        if st.button("Öğrenci Listesini Kaydet"):
+            st_names = [s.strip() for s in raw_st_list.split("\n") if s.strip()]
+            st.session_state["students"][my_class] = st_names
+            st.success(f"{len(st_names)} öğrenci başarıyla kaydedildi.")
+
+    with t_tab1:
+        st.subheader("Haftalık Yatırım Girişi")
+        students = st.session_state["students"][my_class]
+        
+        if not students:
+            st.info("Lütfen önce 'Öğrenci Listesi Tanımlama' sekmesinden sınıf öğrencilerini giriniz.")
+        else:
+            # Tarih Seçimi (Sadece Pazartesi)
+            if "selected_monday" not in st.session_state:
+                today = datetime.date.today()
+                st.session_state["selected_monday"] = today - datetime.timedelta(days=today.weekday())
+
+            c_date1, c_date2, c_date3 = st.columns([1, 2, 1])
+            
+            if c_date1.button("← Önceki Hafta"):
+                st.session_state["selected_monday"] -= datetime.timedelta(days=7)
+                st.rerun()
+                
+            if c_date3.button("Sonraki Hafta →"):
+                st.session_state["selected_monday"] += datetime.timedelta(days=7)
+                st.rerun()
+                
+            sel_monday = c_date2.date_input("Yatırım Pazartesisi", st.session_state["selected_monday"])
+            
+            if sel_monday.weekday() != 0:
+                st.error("⚠️ Lütfen sadece PAZARTESİ günlerini seçiniz. Yatırım toplama günü Pazartesi'dir.")
+            else:
+                date_key = sel_monday.strftime("%d.%m.%Y")
+                st.info(f"Seçili Tarih: **{date_key} (Pazartesi)**")
+                
+                is_holiday = st.checkbox("🌴 Bu Hafta Resmi Tatil / Yatırım Yapılmadı")
+                
+                if my_class not in st.session_state["ledger_data"]:
+                    st.session_state["ledger_data"][my_class] = {}
+                    
+                current_entry = st.session_state["ledger_data"][my_class].get(date_key, {})
+                
+                if is_holiday:
+                    st.warning("Bu hafta yatırım yapılmadı olarak işaretlenecektir.")
+                    if st.button("Tatil Olarak Kaydet"):
+                        st.session_state["ledger_data"][my_class][date_key] = {st_name: 0 for st_name in students}
+                        st.success("Bu hafta tatil olarak kaydedildi.")
+                else:
+                    st.write("### 💰 Öğrenciye Tıkla ve Tutar Gir")
+                    st.caption("Para yatırmayan öğrenciler için herhangi bir işlem yapmanıza gerek yoktur (0 TL kabul edilir).")
+                    
+                    updated_entry = {}
+                    total_day_sum = 0
+                    
+                    cols = st.columns(3)
+                    for idx, st_name in enumerate(students):
+                        col = cols[idx % 3]
+                        existing_val = current_entry.get(st_name, 0)
+                        val = col.number_input(f"👤 {st_name}", min_value=0, step=50, value=existing_val, key=f"input_{st_name}_{date_key}")
+                        updated_entry[st_name] = val
+                        total_day_sum += val
+                        
+                    st.divider()
+                    st.metric(label="Günün Toplam Yatırım Miktarı", value=f"{total_day_sum:,} TL")
+                    
+                    if st.button("✅ Bu Günün Verilerini Onayla ve Kaydet"):
+                        st.session_state["ledger_data"][my_class][date_key] = updated_entry
+                        st.success(f"{date_key} tarihli yatırımlar ({total_day_sum:,} TL) başarıyla onaylandı ve kaydedildi.")
