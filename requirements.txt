@@ -1,5 +1,5 @@
 streamlit
-pytesseract
-pillow
+openai
 pandas
 reportlab
+pillow
