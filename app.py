@@ -1,10 +1,11 @@
 import os
 import io
-import re
+import json
+import base64
 import pandas as pd
 import streamlit as st
 from PIL import Image
-import pytesseract
+from openai import OpenAI
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -15,43 +16,65 @@ st.set_page_config(page_title="Yatırım Defteri Sağlama Uygulaması", layout="
 st.title("📊 Yatırım Defteri Sağlama ve Kontrol Sistemi")
 st.write("Lütfen 1. Dönem ve 2. Dönem defter görsellerini yükleyin.")
 
+API_KEY = st.secrets.get("OPENAI_API_KEY", "")
+
 col1, col2 = st.columns(2)
 with col1:
     file_d1 = st.file_uploader("1. Dönem Defter Görseli", type=["jpg", "jpeg", "png"])
 with col2:
     file_d2 = st.file_uploader("2. Dönem Defter Görseli", type=["jpg", "jpeg", "png"])
 
-def parse_ledger_text(text):
-    """Görselden okunan metni analiz eder ve rakamları ayıklar."""
-    lines = text.split('\n')
-    students = []
-    
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        
-        # Satırdaki tüm sayıları bulur
-        numbers = re.findall(r'\b\d+\b', line)
-        # İsmi bulmak için sayı olmayan kısımları alır
-        words = re.findall(r'[a-zA-ZçğıöşüÇĞİÖŞÜ]+', line)
-        
-        if len(numbers) >= 3 and len(words) >= 1:
-            name = " ".join(words)
-            t1 = int(numbers[0])
-            t2 = int(numbers[1])
-            written = int(numbers[-1])
-            
-            students.append({
-                "name": name,
-                "term1_total": t1,
-                "term2_total": t2,
-                "written_total": written
-            })
-            
-    return students
+def image_to_base64(img):
+    buffered = io.BytesIO()
+    if img.mode != 'RGB':
+        img = img.convert('RGB')
+    img.save(buffered, format="JPEG")
+    return base64.b64encode(buffered.getvalue()).decode('utf-8')
 
-def generate_pdf(students, is_success, errors):
+def process_ledger_images(img1, img2, key):
+    client = OpenAI(api_key=key)
+    img1_b64 = image_to_base64(img1)
+    img2_b64 = image_to_base64(img2)
+    
+    prompt = """
+    Bu iki görsel bir okulun yatırım defterine aittir (1. ve 2. Dönem).
+    Lütfen her iki sayfadaki öğrenci isimlerini, tarihlerdeki yatırımları ve toplamları dikkatle analiz et.
+    SADECE aşağıdaki JSON formatında yanıt ver, başka hiçbir açıklama ekleme:
+    {
+      "students": [
+        {
+          "name": "Öğrenci Adı Soyadı",
+          "term1_total": 1300,
+          "term2_total": 2100,
+          "written_total": 3400
+        }
+      ],
+      "term1_date_total": 57050,
+      "term2_date_total": 65400,
+      "written_grand_total": 122450,
+      "uncertain_cells": []
+    }
+    """
+    
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img1_b64}"}},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img2_b64}"}}
+                ]
+            }
+        ],
+        response_format={"type": "json_object"}
+    )
+    
+    clean_text = response.choices[0].message.content.strip()
+    return json.loads(clean_text)
+
+def generate_pdf(data, is_success, errors):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
     elements = []
@@ -71,7 +94,7 @@ def generate_pdf(students, is_success, errors):
 
     table_data = [["Sıra", "Öğrenci Adı Soyadı", "1. Dönem Toplamı", "2. Dönem Toplamı", "Hesaplanan Toplam", "Defterdeki Toplam", "Durum"]]
     
-    for idx, st_info in enumerate(students, 1):
+    for idx, st_info in enumerate(data['students'], 1):
         calc_tot = st_info['term1_total'] + st_info['term2_total']
         status = "OK" if calc_tot == st_info['written_total'] else "HATALI"
         table_data.append([
@@ -100,35 +123,30 @@ def generate_pdf(students, is_success, errors):
     return buffer
 
 if st.button("Sağlamayı Yap ve Raporla") and file_d1 and file_d2:
-    with st.spinner("Görseller doğrudan okunuyor ve çapraz sağlama yapılıyor..."):
-        try:
-            img1 = Image.open(file_d1)
-            img2 = Image.open(file_d2)
-            
-            # Görselleri doğrudan Tesseract OCR ile oku (Dış API yok)
-            text1 = pytesseract.image_to_string(img1, lang='tur+eng')
-            text2 = pytesseract.image_to_string(img2, lang='tur+eng')
-            
-            students1 = parse_ledger_text(text1)
-            students2 = parse_ledger_text(text2)
-            
-            # Verileri birleştir ve kontrol et
-            students = students1 if students1 else students2
-            
-            errors = []
-            if not students:
-                st.warning("⚠️ Görsellerden sayısal veri okunamadı. Lütfen fotoğrafların net ve düzgün çekildiğinden emin olun.")
-            else:
-                for student in students:
+    if not API_KEY:
+        st.error("Sistem API Anahtarı tanımlanmamış. Lütfen Streamlit Secrets alanını kontrol edin.")
+    else:
+        with st.spinner("Görseller yüksek hassasiyetle analiz ediliyor..."):
+            try:
+                img1 = Image.open(file_d1)
+                img2 = Image.open(file_d2)
+                
+                result = process_ledger_images(img1, img2, API_KEY)
+                
+                errors = []
+                calc_grand_total = 0
+                for student in result['students']:
                     c_tot = student['term1_total'] + student['term2_total']
+                    calc_grand_total += c_tot
                     if c_tot != student['written_total']:
                         errors.append(f"{student['name']}: Dönem toplamları ({c_tot} TL), yazılan toplam ile ({student['written_total']} TL) uyuşmuyor.")
                 
-                is_success = len(errors) == 0
-                pdf_bytes = generate_pdf(students, is_success, errors)
+                is_success = len(errors) == 0 and calc_grand_total == result['written_grand_total']
+                
+                pdf_bytes = generate_pdf(result, is_success, errors)
                 
                 if is_success:
-                    st.success("✅ SAĞLAMA BAŞARILI! Tüm hesaplamalar eşleşiyor.")
+                    st.success("✅ SAĞLAMA BAŞARILI! Tüm yatay ve dikey toplamlar %100 eşleşiyor.")
                 else:
                     st.error("❌ SAĞLAMA BAŞARISIZ! Hatalar tespit edildi.")
                     for e in errors:
@@ -140,5 +158,6 @@ if st.button("Sağlamayı Yap ve Raporla") and file_d1 and file_d2:
                     file_name="Yatirim_Defteri_Saglama_Raporu.pdf",
                     mime="application/pdf"
                 )
-        except Exception as e:
-            st.error(f"İşlem sırasında bir hata oluştu: {e}")
+            except Exception as e:
+                st.error(f"İşlem sırasında bir hata oluştu: {e}")
+                
