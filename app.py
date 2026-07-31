@@ -2,6 +2,7 @@ import os
 import io
 import json
 import base64
+from datetime import datetime, timedelta
 import pandas as pd
 import streamlit as st
 from PIL import Image
@@ -11,10 +12,10 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
-st.set_page_config(page_title="Yatırım Defteri Sağlama Uygulaması", layout="wide")
+st.set_page_config(page_title="Yatırım Defteri İnteraktif Sağlama Sistemi", layout="wide")
 
-st.title("📊 Yatırım Defteri Birebir Matris Sağlama Sistemi")
-st.write("Lütfen 1. Dönem ve 2. Dönem defter görsellerini yükleyin.")
+st.title("📊 Yatırım Defteri Kontrol ve İnteraktif Onay Sistemi")
+st.write("Lütfen 1. Dönem ve/veya 2. Dönem defter görsellerini yükleyin.")
 
 API_KEY = st.secrets.get("OPENAI_API_KEY", "")
 
@@ -43,29 +44,54 @@ def make_turkish_safe(text):
         text = text.replace(search, replace)
     return text
 
-def process_full_ledger_matrix(img1, img2, key):
+def fix_dates_with_calendar(raw_dates):
+    """Pazartesi günleri döngüsüne göre okunamayan veya eksik tarihleri tahmin eder."""
+    fixed_dates = []
+    base_date = None
+    
+    # İlk geçerli tarihi bul
+    for d in raw_dates:
+        try:
+            # 22.09 gibi formatları tarihe çevir
+            clean_d = d.replace("?", "").strip()
+            day, month = map(int, clean_d.split("."))
+            base_date = datetime(2025, month, day)
+            break
+        except Exception:
+            continue
+            
+    if not base_date:
+        return raw_dates
+
+    current_monday = base_date
+    for d in raw_dates:
+        if "?" in d or len(d) < 3:
+            fixed_dates.append(current_monday.strftime("%d.%m"))
+        else:
+            fixed_dates.append(d)
+        current_monday += timedelta(days=7) # Her hafta Pazartesi
+        
+    return fixed_dates
+
+def read_ledger_strict(img1, img2, key):
     client = OpenAI(api_key=key)
     
     prompt = """
     Sana bir okulun yatırım defterine ait görseller verildi.
-    İSTİSNASIZ TÜM ÖĞRENCİLERİ (11 Öğrenci) VE TÜM TARİH SÜTUNLARINI tam bir matris olarak çıkar.
-    Hiçbir öğrenciyi ve hiçbir tarih hücresini atlama.
+    Görselleri çok dikkatli incele. KESİNLİKLE İSİM, SAYI VEYA TARİH UYDURMA.
+    Okuyamadığın veya emin olamadığın hücrelere KESİNLİKLE null veya "?" koy.
     
     Çıktıyı SADECE aşağıdaki JSON formatında ver:
     {
-      "dates": [
-        "22.09", "29.09", "06.10", "13.10", "18.10", "20.10", "27.10", "29.10", "10.11", "17.11", "24.11", "27.11", "12.05", "15.12", "22.12", "29.12", "12.01", "19.01",
-        "26.01", "16.02", "23.02", "02.03", "09.03", "16.03", "23.03", "13.04", "27.04", "04.05", "11.05", "26.05", "28.05", "01.06"
-      ],
+      "read_accuracy_percentage": 85,
+      "dates": ["22.09", "29.09", "06.10", "?", "20.10"],
       "students": [
         {
           "name": "Asel Gul Camruk",
-          "values": [200, 200, 0, 0, 100, 0, 200, 200, 0, 0, 0, 0, 0, 100, 100, 100, 0, 100, 100, 0, 0, 200, 200, 100, 200, 100, 0, 200, 0, 200, 0, 200],
+          "values": [200, 200, null, 100, 200],
           "written_total": 3400
         }
-      ],
-      "column_written_totals": [1600, 3700, 6050, 4500, 5800, 4750, 6800, 3300, 5050, 5400, 4650, 6000, 3300, 4400, 2350, 5450, 1400, 6700, 3750, 3500, 4050, 2300, 6400, 2900, 3200, 2900, 2050, 1800, 2900, 1200, 2300, 2500],
-      "grand_written_total": 122450
+      ]
     }
     """
     
@@ -83,7 +109,7 @@ def process_full_ledger_matrix(img1, img2, key):
     
     return json.loads(response.choices[0].message.content.strip())
 
-def generate_pdf(data, errors):
+def generate_pdf(df_data, dates, errors):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=landscape(A3), rightMargin=10, leftMargin=10, topMargin=10, bottomMargin=10)
     elements = []
@@ -93,10 +119,10 @@ def generate_pdf(data, errors):
 
     if is_success:
         title_style = ParagraphStyle('SuccessTitle', parent=styles['Heading1'], fontSize=20, textColor=colors.HexColor('#15803d'), spaceAfter=8)
-        elements.append(Paragraph(make_turkish_safe("SAGLAMA BASARILI - Tum Ogrenciler Birebir Defter Matrisi"), title_style))
+        elements.append(Paragraph(make_turkish_safe("SAGLAMA BASARILI - Onaylanmis Defter Matris Raporu"), title_style))
     else:
         title_style = ParagraphStyle('FailTitle', parent=styles['Heading1'], fontSize=20, textColor=colors.HexColor('#b91c1c'), spaceAfter=8)
-        elements.append(Paragraph(make_turkish_safe("SAGLAMA BASARISIZ - Tum Ogrenciler Birebir Defter Matrisi"), title_style))
+        elements.append(Paragraph(make_turkish_safe("SAGLAMA BASARISIZ - Onaylanmis Defter Matris Raporu"), title_style))
         
         err_style = ParagraphStyle('ErrText', parent=styles['Normal'], fontSize=9, textColor=colors.HexColor('#dc2626'))
         elements.append(Paragraph(make_turkish_safe("<b>TESPIT EDILEN HATALAR:</b>"), err_style))
@@ -104,31 +130,18 @@ def generate_pdf(data, errors):
             elements.append(Paragraph(make_turkish_safe(f"• {err}"), err_style))
         elements.append(Spacer(1, 8))
 
-    dates = data.get("dates", [])
     header_row = ["Sira", "Ogrenci Adi Soyadi"] + [make_turkish_safe(d) for d in dates] + ["Hesaplanan", "Defterdeki", "Durum"]
-    
     table_data = [header_row]
     
-    for idx, st_info in enumerate(data.get("students", []), 1):
-        vals = st_info.get("values", [])
+    for idx, row in df_data.iterrows():
+        name = make_turkish_safe(row["Öğrenci Adı Soyadı"])
+        written = row["Defterdeki Toplam"]
+        vals = [row[d] for d in dates]
         calc_sum = sum(vals)
-        written_sum = st_info.get("written_total", 0)
-        status = "OK" if calc_sum == written_sum else "HATALI"
+        status = "OK" if calc_sum == written else "HATALI"
         
-        row = [str(idx), make_turkish_safe(st_info.get("name", ""))]
-        row.extend([f"{v}" if v > 0 else "-" for v in vals])
-        row.extend([f"{calc_sum:,}", f"{written_sum:,}", status])
-        table_data.append(row)
-
-    # Dikey Toplam Satırı
-    num_dates = len(dates)
-    col_calculated = []
-    for d_idx in range(num_dates):
-        d_sum = sum(st_info.get("values", [])[d_idx] for st_info in data.get("students", []) if d_idx < len(st_info.get("values", [])))
-        col_calculated.append(d_sum)
-        
-    row_calc_total = ["", "Hesaplanan Sutun Toplami"] + [f"{c:,}" for c in col_calculated] + ["-", "-", "-"]
-    table_data.append(row_calc_total)
+        r = [str(idx+1), name] + [f"{v:,}" if v > 0 else "-" for v in vals] + [f"{calc_sum:,}", f"{written:,}", status]
+        table_data.append(r)
 
     matrix_table = Table(table_data, repeatRows=1)
     matrix_table.setStyle(TableStyle([
@@ -137,8 +150,6 @@ def generate_pdf(data, errors):
         ('ALIGN', (0,0), (-1,-1), 'CENTER'),
         ('FONTSIZE', (0,0), (-1,-1), 7),
         ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#94a3b8')),
-        ('BACKGROUND', (1,-1), (-1,-1), colors.HexColor('#f1f5f9')),
-        ('TEXTCOLOR', (1,-1), (-1,-1), colors.HexColor('#0f172a')),
     ]))
     
     elements.append(matrix_table)
@@ -146,30 +157,69 @@ def generate_pdf(data, errors):
     buffer.seek(0)
     return buffer
 
-if st.button("Sağlamayı Yap ve Bütün Öğrencilerin Raporunu Üret") and (file_d1 or file_d2):
+# ADIM 1: GÖRSEL ANALİZİ
+if st.button("Görselleri Tara ve Kontrol Et") and (file_d1 or file_d2):
     if not API_KEY:
         st.error("Sistem API Anahtarı tanımlanmamış. Lütfen Streamlit Secrets alanını kontrol edin.")
     else:
-        with st.spinner("Tüm öğrenciler ve bütün tarihler matris olarak hazırlanıyor..."):
-            try:
-                img1 = Image.open(file_d1) if file_d1 else None
-                img2 = Image.open(file_d2) if file_d2 else None
+        with st.spinner("Görsel taranıyor, uydurma veri engelleniyor ve takvim eşleştiriliyor..."):
+            img1 = Image.open(file_d1) if file_d1 else None
+            img2 = Image.open(file_d2) if file_d2 else None
+            
+            res = read_ledger_strict(img1, img2, API_KEY)
+            accuracy = res.get("read_accuracy_percentage", 0)
+            
+            if accuracy < 75:
+                st.error(f"❌ Görsel verilerinin çoğunluğu (%{100-accuracy}) okunamadı. Lütfen daha net bir fotoğraf yükleyin.")
+            else:
+                st.success(f"✅ Görsel okuma oranı: %{accuracy}. Okunamayan veya eksik hücreler tespit edildi.")
                 
-                result = process_full_ledger_matrix(img1, img2, API_KEY)
+                # Arka Plan Takvimiyle Tarih Düzeltme
+                fixed_dates = fix_dates_with_calendar(res.get("dates", []))
                 
-                errors = []
-                for student in result.get('students', []):
-                    c_tot = sum(student.get('values', []))
-                    if c_tot != student.get('written_total', 0):
-                        errors.append(f"{student.get('name')}: Hesaplanan ({c_tot} TL), Defterde Yazan ({student.get('written_total')} TL) ile uyuşmuyor.")
+                # Tablo Verisi Hazırlama
+                students_data = []
+                for st_info in res.get("students", []):
+                    row_dict = {"Öğrenci Adı Soyadı": st_info.get("name", "")}
+                    vals = st_info.get("values", [])
+                    for idx, d in enumerate(fixed_dates):
+                        val = vals[idx] if idx < len(vals) else None
+                        row_dict[d] = val if val is not None else 0
+                    row_dict["Defterdeki Toplam"] = st_info.get("written_total", 0)
+                    students_data.append(row_dict)
                 
-                pdf_bytes = generate_pdf(result, errors)
+                st.session_state["raw_df"] = pd.DataFrame(students_data)
+                st.session_state["dates"] = fixed_dates
+
+# ADIM 2: İNTERAKTİF DÜZELTME TABLOSU
+if "raw_df" in st.session_state:
+    st.subheader("📝 Öğretmen Veri Onay ve Düzeltme Tablosu")
+    st.info("Eksik veya '0' olarak görünen hücreleri deftere bakarak düzeltebilir, ardından raporu onaylayabilirsiniz.")
+    
+    edited_df = st.data_editor(st.session_state["raw_df"], num_rows="dynamic")
+    
+    if st.button("Verileri Onayla ve Raporu Üret"):
+        dates = st.session_state["dates"]
+        errors = []
+        
+        for idx, row in edited_df.iterrows():
+            calc_sum = sum(row[d] for d in dates)
+            written = row["Defterdeki Toplam"]
+            if calc_sum != written:
+                errors.append(f"{row['Öğrenci Adı Soyadı']}: Girilen Toplam ({calc_sum} TL), Defterdeki Toplam ({written} TL) ile uyuşmuyor.")
                 
-                st.download_button(
-                    label="📄 Tüm Öğrencileri Ve Bütün Tarihleri İçeren PDF Raporunu İndir",
-                    data=pdf_bytes,
-                    file_name="Tam_Yatirim_Defteri_Saglama_Raporu.pdf",
-                    mime="application/pdf"
-                )
-            except Exception as e:
-                st.error(f"İşlem sırasında bir hata oluştu: {e}")
+        pdf_bytes = generate_pdf(edited_df, dates, errors)
+        
+        if len(errors) == 0:
+            st.success("✅ SAĞLAMA BAŞARILI! Tüm veriler tam olarak eşleşti.")
+        else:
+            st.error("❌ SAĞLAMA BAŞARISIZ! Uyuşmayan satırlar tespit edildi.")
+            for e in errors:
+                st.write(f":red[• {e}]")
+                
+        st.download_button(
+            label="📄 Onaylanmış Detaylı PDF Raporunu İndir",
+            data=pdf_bytes,
+            file_name="Onaylanmis_Yatirim_Defteri_Raporu.pdf",
+            mime="application/pdf"
+        )
