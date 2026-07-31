@@ -5,7 +5,7 @@ import base64
 import pandas as pd
 import streamlit as st
 from PIL import Image
-from groq import Groq
+from openai import OpenAI
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -18,7 +18,7 @@ st.set_page_config(page_title="Yatırım Defteri Sağlama Uygulaması", layout="
 st.title("📊 Yatırım Defteri Sağlama ve Kontrol Sistemi")
 st.write("Lütfen 1. Dönem, 2. Dönem veya her iki dönemin defter görsellerini yükleyin.")
 
-API_KEY = st.secrets.get("GROQ_API_KEY", "")
+API_KEY = st.secrets.get("OPENAI_API_KEY", "")
 
 col1, col2 = st.columns(2)
 with col1:
@@ -34,21 +34,20 @@ def image_to_base64(img):
     return base64.b64encode(buffered.getvalue()).decode('utf-8')
 
 def process_ledger_images(img1, img2, key):
-    client = Groq(api_key=key)
+    client = OpenAI(api_key=key)
     
-    contents = []
     prompt = """
     Sana bir okulun yatırım defterine ait 1. Dönem ve/veya 2. Dönem sayfalarının görselleri verildi.
-    Lütfen sayfaları dikkatle incele, öğrenci isimlerini, her öğrencinin dönem toplamlarını ve gün/tarih bazlı dikey sütun toplamlarını analiz et.
+    Lütfen görsellerdeki öğrenci isimlerini, her öğrencinin dönem toplamlarını ve gün/tarih bazlı dikey sütun toplamlarını çok dikkatli analiz et.
     
-    SADECE ve SADECE aşağıdaki JSON formatında yanıt ver, başka hiçbir açıklama ekleme:
+    SADECE aşağıdaki JSON formatında yanıt ver, başka hiçbir açıklama veya markdown kodu ekleme:
     {
       "students": [
         {
           "name": "Öğrenci Adı Soyadı",
-          "term1_total": 57050,
-          "term2_total": 65400,
-          "written_total": 122450
+          "term1_total": 1300,
+          "term2_total": 2100,
+          "written_total": 3400
         }
       ],
       "daily_totals": [
@@ -72,7 +71,7 @@ def process_ledger_images(img1, img2, key):
         msg_content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img2_b64}"}})
 
     response = client.chat.completions.create(
-        model="llama-3.2-90b-vision-preview",
+        model="gpt-4o-mini",
         messages=[{"role": "user", "content": msg_content}],
         response_format={"type": "json_object"}
     )
@@ -80,10 +79,21 @@ def process_ledger_images(img1, img2, key):
     clean_text = response.choices[0].message.content.strip()
     return json.loads(clean_text)
 
-# Türkçe karakter destekli Canvas Sınıfı
-class UnicodeCanvas(canvas.Canvas):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+# Türkçe Karakter Düzeltme Desteği
+def make_turkish_safe(text):
+    if not isinstance(text, str):
+        return text
+    replacements = {
+        'Ğ': 'G', 'ğ': 'g',
+        'Ş': 'S', 'ş': 's',
+        'İ': 'I', 'ı': 'i',
+        'Ö': 'O', 'ö': 'o',
+        'Ü': 'U', 'ü': 'u',
+        'Ç': 'C', 'ç': 'c'
+    }
+    for search, replace in replacements.items():
+        text = text.replace(search, replace)
+    return text
 
 def generate_pdf(data, errors):
     buffer = io.BytesIO()
@@ -93,24 +103,30 @@ def generate_pdf(data, errors):
 
     is_success = len(errors) == 0
 
-    # Başlık
     if is_success:
         title_style = ParagraphStyle('SuccessTitle', parent=styles['Heading1'], fontSize=24, textColor=colors.HexColor('#15803d'), alignment=1, spaceAfter=15)
-        elements.append(Paragraph("SAĞLAMA BAŞARILI", title_style))
+        elements.append(Paragraph(make_turkish_safe("SAGLAMA BASARILI"), title_style))
     else:
         title_style = ParagraphStyle('FailTitle', parent=styles['Heading1'], fontSize=24, textColor=colors.HexColor('#b91c1c'), alignment=1, spaceAfter=15)
-        elements.append(Paragraph("SAĞLAMA BAŞARISIZ", title_style))
+        elements.append(Paragraph(make_turkish_safe("SAGLAMA BASARISIZ"), title_style))
         
-        # Kırmızı Yazılı Hata Detayları
         err_style = ParagraphStyle('ErrText', parent=styles['Normal'], fontSize=11, textColor=colors.HexColor('#dc2626'))
-        elements.append(Paragraph("<b>TESPİT EDİLEN HATALAR / OLASI NEDENLER:</b>", err_style))
+        elements.append(Paragraph(make_turkish_safe("<b>TESPIT EDILEN HATALAR / OLASI NEDENLER:</b>"), err_style))
         for err in errors:
-            elements.append(Paragraph(f"• {err}", err_style))
+            elements.append(Paragraph(make_turkish_safe(f"• {err}"), err_style))
         elements.append(Spacer(1, 12))
 
     # 1. ÖĞRENCİ BAZLI SAĞLAMA TABLOSU
-    elements.append(Paragraph("<b>1. Öğrenci Bazı Yatırım Toplamları</b>", styles['Heading3']))
-    table_data = [["Sıra", "Öğrenci Adı Soyadı", "1. Dönem Toplam", "2. Dönem Toplam", "Hesaplanan Toplam", "Defterdeki Toplam", "Durum"]]
+    elements.append(Paragraph(make_turkish_safe("<b>1. Ogrenci Bazi Yatirim Toplamlari</b>"), styles['Heading3']))
+    table_data = [[
+        make_turkish_safe("Sira"), 
+        make_turkish_safe("Ogrenci Adi Soyadi"), 
+        make_turkish_safe("1. Donem Toplam"), 
+        make_turkish_safe("2. Donem Toplam"), 
+        make_turkish_safe("Hesaplanan Toplam"), 
+        make_turkish_safe("Defterdeki Toplam"), 
+        make_turkish_safe("Durum")
+    ]]
     
     for idx, st_info in enumerate(data.get('students', []), 1):
         t1 = st_info.get('term1_total', 0)
@@ -121,7 +137,7 @@ def generate_pdf(data, errors):
         status = "OK" if calc == written else "HATALI"
         table_data.append([
             str(idx),
-            st_info.get('name', 'Bilinmiyor'),
+            make_turkish_safe(st_info.get('name', 'Bilinmiyor')),
             f"{t1:,} TL",
             f"{t2:,} TL",
             f"{calc:,} TL",
@@ -142,15 +158,20 @@ def generate_pdf(data, errors):
 
     # 2. GÜN BAZLI YATIRIM SAĞLAMA TABLOSU
     if data.get('daily_totals'):
-        elements.append(Paragraph("<b>2. Gün / Tarih Bazlı Sütun Toplamları Sağlaması</b>", styles['Heading3']))
-        daily_table_data = [["Tarih", "Hesaplanan Günlük Toplam", "Defterde Yazan Günlük Toplam", "Durum"]]
+        elements.append(Paragraph(make_turkish_safe("<b>2. Gun / Tarih Bazli Sutun Toplamlari Saglamasi</b>"), styles['Heading3']))
+        daily_table_data = [[
+            make_turkish_safe("Tarih"), 
+            make_turkish_safe("Hesaplanan Gunluk Toplam"), 
+            make_turkish_safe("Defterde Yazan Gunluk Toplam"), 
+            make_turkish_safe("Durum")
+        ]]
         
         for d in data['daily_totals']:
             c_sum = d.get('calculated_sum', 0)
             w_sum = d.get('written_sum', 0)
             d_status = "OK" if c_sum == w_sum else "HATALI"
             daily_table_data.append([
-                d.get('date', '-'),
+                make_turkish_safe(d.get('date', '-')),
                 f"{c_sum:,} TL",
                 f"{w_sum:,} TL",
                 d_status
@@ -165,7 +186,7 @@ def generate_pdf(data, errors):
         ]))
         elements.append(d_table)
 
-    doc.build(elements, canvasmaker=UnicodeCanvas)
+    doc.build(elements)
     buffer.seek(0)
     return buffer
 
