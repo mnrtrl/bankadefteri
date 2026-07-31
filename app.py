@@ -10,7 +10,7 @@ from reportlab.lib import colors
 st.set_page_config(page_title="Okul Yatırım Defteri Yönetim Sistemi", layout="wide")
 
 # ---------------------------------------------------------
-# KALICI VERİ DEPOSU (SESSION STATE)
+# KALICI KULLANICI VE HAF IZA DEPOSU
 # ---------------------------------------------------------
 if "users" not in st.session_state:
     st.session_state["users"] = {
@@ -18,13 +18,13 @@ if "users" not in st.session_state:
     }
 
 if "teachers_classes" not in st.session_state:
-    st.session_state["teachers_classes"] = {}  # kullanıcı_adı: sınıf_adı
+    st.session_state["teachers_classes"] = {}
 
 if "students" not in st.session_state:
-    st.session_state["students"] = {}  # sınıf_adı: [öğrenci_isimleri]
+    st.session_state["students"] = {}
 
 if "ledger_data" not in st.session_state:
-    st.session_state["ledger_data"] = {}  # sınıf_adı: {tarih: {öğrenci: tutar}}
+    st.session_state["ledger_data"] = {}
 
 if "logged_user" not in st.session_state:
     st.session_state["logged_user"] = None
@@ -92,15 +92,15 @@ with col_head3:
 st.divider()
 
 # ---------------------------------------------------------
-# YÖNETİCİ VE ANA YÖNETİCİ PANELİ
+# YÖNETİCİ VE ANA YÖNETİCİ PANELİ (mnrtrl VE YÖNETİCİLER İÇİN)
 # ---------------------------------------------------------
 if user_role in ["Ana Yönetici", "Yönetici"]:
     st.header("👑 Yönetici Kontrol Paneli")
     
     tab1, tab2, tab3, tab4 = st.tabs([
         "➕ Yeni Kullanıcı Ekle", 
-        "✏️ Kullanıcı ve Sınıf Düzenle", 
-        "👀 Sınıf Verileri İzle", 
+        "✏️ Kullanıcı Düzenle ve Sınıf Atama", 
+        "👀 Sınıf Verilerini İzle", 
         "📄 PDF Raporu İndir"
     ])
     
@@ -121,15 +121,15 @@ if user_role in ["Ana Yönetici", "Yönetici"]:
                     st.error("Bu kullanıcı adı zaten mevcut!")
                 else:
                     st.session_state["users"][new_u] = {"pass": new_p, "role": new_r, "name": new_n}
-                    st.success(f"'{new_n}' hesabı başarıyla oluşturuldu. Artık sisteme giriş yapabilir.")
+                    st.success(f"'{new_n}' hesabı başarıyla oluşturuldu.")
+                    st.rerun()
             else:
                 st.warning("Lütfen tüm alanları eksiksiz doldurun.")
 
-    # TAB 2: KULLANICI VE SINIF DÜZENLEME
+    # TAB 2: KULLANICI DÜZENLEME VE SINIF ATAMA
     with tab2:
-        st.subheader("Kayıtlı Kullanıcı Listesi ve Düzenleme")
+        st.subheader("Kayıtlı Kullanıcı Yönetimi ve Sınıf Atama")
         all_users = st.session_state["users"]
-        
         editable_users = {u: data for u, data in all_users.items() if data["role"] != "Ana Yönetici"}
         
         if editable_users:
@@ -144,14 +144,15 @@ if user_role in ["Ana Yönetici", "Yönetici"]:
             edit_class = ec3.text_input("Atanan Sınıf (Örn: 2B)", value=curr_class)
             
             st.write("")
-            if ec4.button("Değişiklikleri Kaydet", use_container_width=True):
+            if ec4.button("Gerekli Güncellemeleri Kaydet", use_container_width=True):
                 st.session_state["users"][selected_edit_user]["name"] = edit_name
                 st.session_state["users"][selected_edit_user]["pass"] = edit_pass
                 if edit_class:
                     st.session_state["teachers_classes"][selected_edit_user] = edit_class
-                st.success(f"'{selected_edit_user}' kullanıcısının bilgileri güncellendi.")
+                st.success(f"'{selected_edit_user}' bilgileri güncellendi.")
                 st.rerun()
                 
+            st.divider()
             if st.button("❌ Bu Kullanıcıyı Sistemden Sil"):
                 del st.session_state["users"][selected_edit_user]
                 if selected_edit_user in st.session_state["teachers_classes"]:
@@ -229,7 +230,7 @@ if user_role in ["Ana Yönetici", "Yönetici"]:
                     st.download_button("⬇️ PDF Raporunu İndir", data=buffer, file_name=f"{pdf_cl}_Yatirim_Defteri.pdf", mime="application/pdf")
 
 # ---------------------------------------------------------
-# ÖĞRETMEN PANELİ
+# ÖĞRETMEN PANELİ (SADECE ÖĞRETMENLER İÇİN)
 # ---------------------------------------------------------
 elif user_role == "Öğretmen":
     my_class = st.session_state["teachers_classes"].get(curr_user, None)
